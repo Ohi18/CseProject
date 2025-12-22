@@ -1,5 +1,3 @@
-
-<?php echo "<!-- TEST FILE OK -->"; ?>
 <?php
 /*
  * SQL to run in phpMyAdmin to fix table structures and remove bad ID=0 rows:
@@ -36,6 +34,7 @@ $gender = "";
 $reg_id = "";
 $address = "";
 $location_id = "";
+$location_name = "";
 
 // Check if form was submitted
 if ($_SERVER["REQUEST_METHOD"] == "POST") {
@@ -47,13 +46,14 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         $error_message = "Please select a user type.";
         $user_type = ""; // Reset for form re-display
     } else {
-        // Connect to database
-        $conn = new mysqli('localhost', 'root', '', 'goglam');
-        
-        // Check connection
-        if ($conn->connect_error) {
-            $error_message = "Database connection failed: " . $conn->connect_error . ". Please check your database settings.";
-        } else {
+        // Connect to database with error handling
+        try {
+            $conn = new mysqli('localhost', 'root', '', 'goglam');
+            
+            // Check connection
+            if ($conn->connect_error) {
+                $error_message = "Database connection failed: " . $conn->connect_error . ". Please make sure XAMPP MySQL is running.";
+            } else {
             if ($user_type === "customer") {
                 // Get customer form data - ensure we're getting values, not empty strings
                 $name = isset($_POST["full_name"]) ? trim($_POST["full_name"]) : "";
@@ -104,8 +104,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                             // Get the auto-generated customer_id (if needed)
                             $newCustomerId = $conn->insert_id;
                             $success_message = "Registration complete! You can now log in.";
-                            // Redirect after 2 seconds
-                            header("refresh:2;url=login.php");
+                            // Redirect after 2 seconds with user type
+                            header("refresh:2;url=login.php?user_type=customer");
                         } else {
                             $error_message = "Registration failed: " . $conn->error;
                         }
@@ -121,7 +121,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                 $password = isset($_POST["password"]) ? $_POST["password"] : "";
                 $address = isset($_POST["address"]) ? trim($_POST["address"]) : "";
                 $phone_no = isset($_POST["phone_no"]) ? trim($_POST["phone_no"]) : "";
-                $location_id = isset($_POST["location_id"]) ? trim($_POST["location_id"]) : "";
+                $location_name = isset($_POST["location_name"]) ? trim($_POST["location_name"]) : "";
                 
                 // Preserve form values for re-display
                 $reg_id = $reg_id;
@@ -129,7 +129,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                 $email = $email;
                 $address = $address;
                 $phone_no = $phone_no;
-                $location_id = $location_id;
+                $location_name = $location_name;
                 
                 // Validate required fields with specific error messages
                 if (empty($reg_id)) {
@@ -144,8 +144,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                     $error_message = "Address is required.";
                 } elseif (empty($phone_no)) {
                     $error_message = "Phone number is required.";
-                } elseif (empty($location_id)) {
-                    $error_message = "Location is required.";
                 } else {
                     // Check if email already exists
                     $check_stmt = $conn->prepare("SELECT email FROM saloon WHERE email = ?");
@@ -159,22 +157,52 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                     } else {
                         $check_stmt->close();
                         
+                        // Handle location - find existing or create new
+                        $location_id = null;
+                        if (!empty($location_name)) {
+                            // Check if location already exists
+                            $location_check = $conn->prepare("SELECT location_id FROM location WHERE name = ?");
+                            $location_check->bind_param("s", $location_name);
+                            $location_check->execute();
+                            $location_result = $location_check->get_result();
+                            
+                            if ($location_result->num_rows > 0) {
+                                // Location exists, use its ID
+                                $location_row = $location_result->fetch_assoc();
+                                $location_id = $location_row['location_id'];
+                            } else {
+                                // Location doesn't exist, create it
+                                $location_insert = $conn->prepare("INSERT INTO location (name) VALUES (?)");
+                                $location_insert->bind_param("s", $location_name);
+                                if ($location_insert->execute()) {
+                                    $location_id = $conn->insert_id;
+                                }
+                                $location_insert->close();
+                            }
+                            $location_check->close();
+                        }
+                        
                         // Hash the password before inserting
                         $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
                         
                         // Insert saloon (saloon_id is AUTO_INCREMENT, so we don't include it)
                         // Using exact column names from database schema: reg_id, name, email, password, address, phone_no, location_id
-                        $stmt = $conn->prepare("INSERT INTO saloon (reg_id, name, email, password, address, phone_no, location_id) VALUES (?, ?, ?, ?, ?, ?, ?)");
-                        $reg_id_int = (int)$reg_id;
-                        $location_id_int = (int)$location_id;
-                        $stmt->bind_param("isssssi", $reg_id_int, $name, $email, $hashedPassword, $address, $phone_no, $location_id_int);
+                        if ($location_id !== null) {
+                            $stmt = $conn->prepare("INSERT INTO saloon (reg_id, name, email, password, address, phone_no, location_id) VALUES (?, ?, ?, ?, ?, ?, ?)");
+                            $reg_id_int = (int)$reg_id;
+                            $stmt->bind_param("isssssi", $reg_id_int, $name, $email, $hashedPassword, $address, $phone_no, $location_id);
+                        } else {
+                            $stmt = $conn->prepare("INSERT INTO saloon (reg_id, name, email, password, address, phone_no, location_id) VALUES (?, ?, ?, ?, ?, ?, NULL)");
+                            $reg_id_int = (int)$reg_id;
+                            $stmt->bind_param("isssss", $reg_id_int, $name, $email, $hashedPassword, $address, $phone_no);
+                        }
                         
                         if ($stmt->execute()) {
                             // Get the auto-generated saloon_id (if needed)
                             $newSaloonId = $conn->insert_id;
                             $success_message = "Registration complete! You can now log in.";
-                            // Redirect after 2 seconds
-                            header("refresh:2;url=login.php");
+                            // Redirect after 2 seconds with user type
+                            header("refresh:2;url=login.php?user_type=saloon");
                         } else {
                             $error_message = "Registration failed: " . $conn->error;
                         }
@@ -185,7 +213,14 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             }
             
             // Close connection
-            $conn->close();
+            if (isset($conn) && $conn) {
+                $conn->close();
+            }
+            } // End of else block (connection successful)
+        } catch (mysqli_sql_exception $e) {
+            $error_message = "Database connection error: " . $e->getMessage() . ". Please make sure XAMPP MySQL is running and the database 'goglam' exists.";
+        } catch (Exception $e) {
+            $error_message = "An error occurred: " . $e->getMessage() . ". Please check your database settings.";
         }
     }
 }
@@ -199,7 +234,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     <link rel="icon" type="image/png" href="goglam-logo.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Great+Vibes&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Great+Vibes&display=swap" rel="stylesheet">
     <style>
         * {
             margin: 0;
@@ -208,13 +243,15 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background-color: #F7E8ED;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: #fafafa;
+            color: #1a1a1a;
             min-height: 100vh;
             display: flex;
             justify-content: center;
             align-items: center;
             padding: 20px;
+            line-height: 1.6;
         }
 
         .registration-container {
@@ -232,8 +269,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         }
 
         .logo-container h1 {
-            font-family: 'Great Vibes', cursive;
-            font-size: 42px;
+            font-size: 24px;
+            font-weight: 700;
             color: #7A1C2C;
             margin-bottom: 10px;
         }
@@ -289,7 +326,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         }
 
         .user-type-card.active {
-            background: #934f7b;
+            background: #7A1C2C;
             color: #ffffff;
         }
 
@@ -319,7 +356,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
         .form-group label {
             display: block;
-            color: #7A1C2C;
+            color: #1a1a1a;
             font-size: 14px;
             font-weight: 600;
             margin-bottom: 8px;
@@ -329,16 +366,17 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         .form-group select {
             width: 100%;
             padding: 12px;
-            border: 2px solid #D4B8C8;
-            border-radius: 8px;
-            font-size: 16px;
-            transition: border-color 0.3s ease;
+            border: 1px solid #d0d0d0;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+            transition: border-color 0.2s;
         }
 
         .form-group input:focus,
         .form-group select:focus {
             outline: none;
-            border-color: #9B5A7B;
+            border-color: #7A1C2C;
         }
 
         .form-row {
@@ -366,31 +404,32 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
         .submit-btn {
             width: 100%;
-            padding: 14px;
-            background: #9B5A7B;
+            padding: 12px 24px;
+            background: #7A1C2C;
             color: white;
             border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 600;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            font-family: inherit;
             cursor: pointer;
-            transition: background 0.3s ease;
+            transition: all 0.2s;
             margin-top: 10px;
         }
 
         .submit-btn:hover {
-            background: #8B4A6B;
+            background: #5a141f;
         }
 
         .login-link {
             text-align: center;
             margin-top: 20px;
-            color: #9B5A7B;
+            color: #666;
             font-size: 14px;
         }
 
         .login-link a {
-            color: #9B5A7B;
+            color: #7A1C2C;
             text-decoration: none;
             font-weight: 600;
         }
@@ -423,14 +462,15 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             text-decoration: none;
             font-size: 14px;
             padding: 10px 20px;
-            background: #9B5A7B;
-            border-radius: 8px;
-            transition: all 0.3s ease;
+            background: #7A1C2C;
+            border-radius: 6px;
+            transition: all 0.2s;
             margin-top: 10px;
+            font-family: inherit;
         }
 
         .login-link-btn:hover {
-            background: #8B4A6B;
+            background: #5a141f;
         }
     </style>
 </head>
@@ -448,7 +488,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         <div class="registration-container">
             <div class="logo-container">
                 <h1>GoGlam</h1>
-                <p style="color: #9B5A7B; font-size: 18px;">Create Your Account</p>
+                <p style="color: #666; font-size: 16px;">Create Your Account</p>
             </div>
 
             <?php if (!empty($error_message)): ?>
@@ -540,36 +580,14 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                         <input type="text" id="address" name="address" value="<?php echo htmlspecialchars($address); ?>" <?php echo ($user_type === 'saloon') ? 'required' : ''; ?>>
                     </div>
 
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="saloon_phone_no">Phone Number</label>
-                            <input type="tel" id="saloon_phone_no" name="phone_no" value="<?php echo htmlspecialchars($phone_no); ?>" <?php echo ($user_type === 'saloon') ? 'required' : ''; ?>>
-                        </div>
+                    <div class="form-group">
+                        <label for="saloon_phone_no">Phone Number</label>
+                        <input type="tel" id="saloon_phone_no" name="phone_no" value="<?php echo htmlspecialchars($phone_no); ?>" <?php echo ($user_type === 'saloon') ? 'required' : ''; ?>>
+                    </div>
 
-                        <div class="form-group">
-                            <label for="location_id">Location</label>
-                            <select id="location_id" name="location_id" <?php echo ($user_type === 'saloon') ? 'required' : ''; ?>>
-                                <option value="">Select Location</option>
-                                <?php
-                                // Fetch locations from database
-                                $conn_temp = new mysqli('localhost', 'root', '', 'goglam');
-                                if (!$conn_temp->connect_error) {
-                                    $location_result = $conn_temp->query("SELECT location_id, name FROM location ORDER BY name");
-                                    if ($location_result && $location_result->num_rows > 0) {
-                                        while ($loc_row = $location_result->fetch_assoc()) {
-                                            $selected = ($location_id == $loc_row['location_id']) ? 'selected' : '';
-                                            echo '<option value="' . htmlspecialchars($loc_row['location_id']) . '" ' . $selected . '>' . htmlspecialchars($loc_row['name']) . '</option>';
-                                        }
-                                    } else {
-                                        echo '<option value="">No locations available</option>';
-                                    }
-                                    $conn_temp->close();
-                                } else {
-                                    echo '<option value="">Database error</option>';
-                                }
-                                ?>
-                            </select>
-                        </div>
+                    <div class="form-group">
+                        <label for="location_name">Location</label>
+                        <input type="text" id="location_name" name="location_name" value="<?php echo htmlspecialchars($location_name); ?>" placeholder="Enter location">
                     </div>
                 </div>
 
@@ -618,7 +636,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                         });
                         // Disable and remove required from saloon fields
                         document.querySelectorAll('#saloonFields input, #saloonFields select').forEach(el => {
-                            if (el.name !== 'user_type') {
+                            if (el.name !== 'user_type' && el.type !== 'button') {
                                 el.disabled = true;
                                 el.required = false;
                                 el.removeAttribute('required');
@@ -633,7 +651,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                         
                         // Enable and make saloon fields required
                         document.querySelectorAll('#saloonFields input, #saloonFields select').forEach(el => {
-                            if (el.name !== 'user_type') {
+                            if (el.name !== 'user_type' && el.type !== 'button') {
                                 el.disabled = false;
                                 el.removeAttribute('readonly');
                                 if (el.type !== 'hidden') {
@@ -671,12 +689,13 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                             }
                         });
                     } else if (saloonRadio.checked) {
-                        // Disable all customer fields
+                        // Disable all customer fields only - keep saloon fields enabled so they get submitted
                         document.querySelectorAll('#customerFields input, #customerFields select').forEach(el => {
                             if (el.name !== 'user_type') {
                                 el.disabled = true;
                             }
                         });
+                        // DO NOT disable saloon fields - they need to be submitted with the form
                     }
                     // Allow form to submit
                 });

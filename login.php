@@ -10,7 +10,7 @@ $database = "goglam";
 // Initialize variables
 $email = "";
 $password = "";
-$user_type = "";
+$user_type = isset($_GET['user_type']) ? trim($_GET['user_type']) : ""; // Read from URL if available
 $error_message = "";
 
 // Check if form was submitted
@@ -28,13 +28,14 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     } elseif (empty($user_type) || !in_array($user_type, ["customer", "saloon"])) {
         $error_message = "Please select a user type.";
     } else {
-        // Connect to database (XAMPP default: no password for root)
-        $conn = new mysqli('localhost', 'root', '', 'goglam');
+        // Connect to database with error handling
+        try {
+            $conn = new mysqli('localhost', 'root', '', 'goglam');
 
-        // Check connection
-        if ($conn->connect_error) {
-            $error_message = "Database connection failed: " . $conn->connect_error . ". Please check your database settings.";
-        } else {
+            // Check connection
+            if ($conn->connect_error) {
+                $error_message = "Database connection failed: " . $conn->connect_error . ". Please make sure XAMPP MySQL is running.";
+            } else {
             // Prepare query based on user type
             if ($user_type === "customer") {
                 // Query customer table
@@ -69,8 +70,13 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                         $stored_password_hash = $row['password'];
                         $name = $row['name'] ?? '';
                         
-                        // Verify password using password_verify()
-                        if (password_verify($password, $stored_password_hash)) {
+                        // Check if password hash exists and is valid format
+                        if (empty($stored_password_hash)) {
+                            $error_message = "Login Failed: Password not set in database. Please contact support.";
+                        } elseif (!password_verify($password, $stored_password_hash)) {
+                            // Password verification failed
+                            $error_message = "Login Failed: wrong email or password.";
+                        } else {
                             // Password is correct - set session variables with real ID from database
                             $_SESSION['user_id'] = $user_id;
                             $_SESSION['email'] = $row['email'];
@@ -81,11 +87,13 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                             $stmt->close();
                             $conn->close();
                             
-                            // Redirect to dashboard
-                            header("Location: dashboard.php");
+                            // Redirect based on user type
+                            if ($user_type === 'saloon') {
+                                header("Location: saloon_dashboard.php");
+                            } else {
+                                header("Location: customer_dashboard.php");
+                            }
                             exit();
-                        } else {
-                            $error_message = "Login Failed: wrong email or password.";
                         }
                     } else {
                         $error_message = "Login Failed: wrong email or password.";
@@ -101,7 +109,14 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             }
             
             // Close connection
-            $conn->close();
+            if (isset($conn) && $conn) {
+                $conn->close();
+            }
+            } // End of else block (connection successful)
+        } catch (mysqli_sql_exception $e) {
+            $error_message = "Database connection error: " . $e->getMessage() . ". Please make sure XAMPP MySQL is running and the database 'goglam' exists.";
+        } catch (Exception $e) {
+            $error_message = "An error occurred: " . $e->getMessage() . ". Please check your database settings.";
         }
     }
 }
@@ -115,7 +130,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     <link rel="icon" type="image/png" href="goglam-logo.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Great+Vibes&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Great+Vibes&display=swap" rel="stylesheet">
     <style>
         * {
             margin: 0;
@@ -124,13 +139,15 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background-color: #F7E8ED;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: #fafafa;
+            color: #1a1a1a;
             min-height: 100vh;
             display: flex;
             justify-content: center;
             align-items: center;
             padding: 20px;
+            line-height: 1.6;
         }
 
         .login-container {
@@ -148,8 +165,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         }
 
         .logo-container h1 {
-            font-family: 'Great Vibes', cursive;
-            font-size: 42px;
+            font-size: 24px;
+            font-weight: 700;
             color: #7A1C2C;
             margin-bottom: 10px;
         }
@@ -170,7 +187,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
         .form-group label {
             display: block;
-            color: #7A1C2C;
+            color: #1a1a1a;
             font-size: 14px;
             font-weight: 600;
             margin-bottom: 8px;
@@ -180,16 +197,17 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         .form-group select {
             width: 100%;
             padding: 12px;
-            border: 2px solid #D4B8C8;
-            border-radius: 8px;
-            font-size: 16px;
-            transition: border-color 0.3s ease;
+            border: 1px solid #d0d0d0;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+            transition: border-color 0.2s;
         }
 
         .form-group input:focus,
         .form-group select:focus {
             outline: none;
-            border-color: #9B5A7B;
+            border-color: #7A1C2C;
         }
 
         .user-type-selector {
@@ -222,7 +240,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         }
 
         .user-type-card.active {
-            background: #934f7b;
+            background: #7A1C2C;
             color: #ffffff;
         }
 
@@ -248,30 +266,31 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
         .submit-btn {
             width: 100%;
-            padding: 14px;
-            background: #9B5A7B;
+            padding: 12px 24px;
+            background: #7A1C2C;
             color: white;
             border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 600;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            font-family: inherit;
             cursor: pointer;
-            transition: background 0.3s ease;
+            transition: all 0.2s;
         }
 
         .submit-btn:hover {
-            background: #8B4A6B;
+            background: #5a141f;
         }
 
         .register-link {
             text-align: center;
             margin-top: 20px;
-            color: #9B5A7B;
+            color: #666;
             font-size: 14px;
         }
 
         .register-link a {
-            color: #9B5A7B;
+            color: #7A1C2C;
             text-decoration: none;
             font-weight: 600;
         }
@@ -285,7 +304,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     <div class="login-container">
         <div class="logo-container">
             <h1>GoGlam</h1>
-            <p style="color: #9B5A7B; font-size: 18px;">Welcome Back!</p>
+            <p style="color: #666; font-size: 16px;">Welcome Back!</p>
         </div>
 
         <?php if (!empty($error_message)): ?>
@@ -296,12 +315,12 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
         <form method="POST" action="login.php">
             <div class="user-type-selector">
-                <input type="radio" id="user_type_customer" name="user_type" value="customer" <?php echo ($user_type === 'customer') ? 'checked' : ''; ?> required>
-                <label for="user_type_customer" class="user-type-card user-type-card-customer <?php echo ($user_type === 'customer') ? 'active' : ''; ?>">
+                <input type="radio" id="user_type_customer" name="user_type" value="customer" <?php echo ($user_type === 'customer' || empty($user_type)) ? 'checked' : ''; ?> required>
+                <label for="user_type_customer" class="user-type-card user-type-card-customer <?php echo ($user_type === 'customer' || empty($user_type)) ? 'active' : ''; ?>">
                     <img src="customer-icon.png" alt="Customer" class="user-type-avatar">
                     <div>
                         <div class="user-type-text-title">Customer</div>
-                        <div class="user-type-text-subtitle">Select if you’re booking services</div>
+                        <div class="user-type-text-subtitle">Select if you're booking services</div>
                     </div>
                 </label>
 
@@ -310,7 +329,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                     <img src="saloon-icon.png" alt="Saloon" class="user-type-avatar">
                     <div>
                         <div class="user-type-text-title">Saloon</div>
-                        <div class="user-type-text-subtitle">Select if you’re a saloon owner</div>
+                        <div class="user-type-text-subtitle">Select if you're a saloon owner</div>
                     </div>
                 </label>
             </div>

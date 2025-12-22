@@ -1,10 +1,17 @@
 <?php
 header('Content-Type: application/json');
 
-$conn = new mysqli('localhost', 'root', '', 'goglam');
-
-if ($conn->connect_error) {
-    echo json_encode(['error' => 'Database connection failed']);
+// Connect to database with error handling
+try {
+    $conn = new mysqli('localhost', 'root', '', 'goglam');
+    if ($conn->connect_error) {
+        throw new Exception("Database connection failed: " . $conn->connect_error);
+    }
+} catch (mysqli_sql_exception $e) {
+    echo json_encode(['error' => 'Database connection error: ' . $e->getMessage() . '. Please make sure XAMPP MySQL is running.']);
+    exit;
+} catch (Exception $e) {
+    echo json_encode(['error' => 'Database error: ' . $e->getMessage()]);
     exit;
 }
 
