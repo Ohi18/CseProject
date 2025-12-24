@@ -110,3 +110,7 @@ Edit `websocket_server.js` and change the PORT constant to an available port (e.
 - `message` - Stores individual messages with sender_type, message_text, time_stamp, and chat_id
 
 
+
+
+
+

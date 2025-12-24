@@ -123,6 +123,205 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             $stmt->close();
         }
     }
+
+    // Add / update saloon schedule (date-specific)
+    if (isset($_POST['action']) && $_POST['action'] === 'add_schedule') {
+        $schedule_date = trim($_POST['schedule_date'] ?? '');
+        $start_time = trim($_POST['start_time'] ?? '');
+        $end_time = trim($_POST['end_time'] ?? '');
+        $status = $_POST['status'] ?? 'available';
+
+        // Basic validation
+        if (empty($schedule_date) || empty($start_time) || empty($end_time)) {
+            $error_message = "Date, start time and end time are required for schedule.";
+        } else {
+            // Validate date format (YYYY-MM-DD)
+            $date_obj = DateTime::createFromFormat('Y-m-d', $schedule_date);
+            $date_errors = DateTime::getLastErrors();
+
+            if (!$date_obj || !empty($date_errors['warning_count']) || !empty($date_errors['error_count'])) {
+                $error_message = "Invalid date format.";
+            } else {
+                // Prevent past dates
+                $today = new DateTime('today');
+                if ($date_obj < $today) {
+                    $error_message = "You cannot set a schedule for a past date.";
+                } else {
+                    // Ensure start_time < end_time
+                    if ($start_time >= $end_time) {
+                        $error_message = "Start time must be earlier than end time.";
+                    } else {
+                        // Check if saloon_date_availability table exists
+                        $table_check = $conn->query("SHOW TABLES LIKE 'saloon_date_availability'");
+                        if ($table_check && $table_check->num_rows == 0) {
+                            $error_message = "Schedule table 'saloon_date_availability' does not exist. Please create it in the database.";
+                        } else {
+                            $is_available = ($status === 'unavailable') ? 0 : 1;
+
+                            // Optional: prevent overlapping available ranges for the same date
+                            if ($is_available === 1) {
+                                $overlap_stmt = $conn->prepare("
+                                    SELECT id FROM saloon_date_availability
+                                    WHERE saloon_id = ?
+                                      AND date = ?
+                                      AND is_available = 1
+                                      AND NOT (end_time <= ? OR start_time >= ?)
+                                ");
+                                $overlap_stmt->bind_param("isss", $saloon_id, $schedule_date, $start_time, $end_time);
+                                $overlap_stmt->execute();
+                                $overlap_result = $overlap_stmt->get_result();
+
+                                if ($overlap_result && $overlap_result->num_rows > 0) {
+                                    $error_message = "This time range overlaps with an existing available schedule on this date.";
+                                }
+                                $overlap_stmt->close();
+                            }
+
+                            // Insert if no error so far
+                            if (empty($error_message)) {
+                                $stmt = $conn->prepare("
+                                    INSERT INTO saloon_date_availability (saloon_id, date, start_time, end_time, is_available)
+                                    VALUES (?, ?, ?, ?, ?)
+                                ");
+                                $stmt->bind_param("isssi", $saloon_id, $schedule_date, $start_time, $end_time, $is_available);
+
+                                if ($stmt->execute()) {
+                                    $success_message = "Schedule entry added successfully.";
+                                } else {
+                                    $error_message = "Failed to add schedule entry: " . $conn->error;
+                                }
+                                $stmt->close();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Delete schedule entry
+    if (isset($_POST['action']) && $_POST['action'] === 'delete_schedule') {
+        $schedule_id = (int)($_POST['schedule_id'] ?? 0);
+
+        if ($schedule_id <= 0) {
+            $error_message = "Invalid schedule ID.";
+        } else {
+            // Check table exists
+            $table_check = $conn->query("SHOW TABLES LIKE 'saloon_date_availability'");
+            if ($table_check && $table_check->num_rows == 0) {
+                $error_message = "Schedule table 'saloon_date_availability' does not exist.";
+            } else {
+                $stmt = $conn->prepare("DELETE FROM saloon_date_availability WHERE id = ? AND saloon_id = ?");
+                $stmt->bind_param("ii", $schedule_id, $saloon_id);
+
+                if ($stmt->execute()) {
+                    $success_message = "Schedule entry deleted successfully.";
+                } else {
+                    $error_message = "Failed to delete schedule entry: " . $conn->error;
+                }
+                $stmt->close();
+            }
+        }
+    }
+
+    // Update booking (time, price, status)
+    if (isset($_POST['action']) && $_POST['action'] === 'update_booking') {
+        $slot_id = isset($_POST['slot_id']) ? (int)$_POST['slot_id'] : 0;
+        $slot_datetime = isset($_POST['slot_datetime']) ? trim($_POST['slot_datetime']) : '';
+        $total_amount = isset($_POST['total_amount']) ? (float)$_POST['total_amount'] : 0;
+        $status = isset($_POST['status']) ? trim($_POST['status']) : 'confirmed';
+
+        // Convert HTML datetime-local (YYYY-MM-DDTHH:MM) to MySQL DATETIME (YYYY-MM-DD HH:MM:SS)
+        if (!empty($slot_datetime)) {
+            $slot_datetime = str_replace('T', ' ', $slot_datetime) . ':00';
+        }
+
+        $allowed_statuses = ['confirmed', 'completed', 'cancelled'];
+        if (!in_array($status, $allowed_statuses, true)) {
+            $status = 'confirmed';
+        }
+
+        if ($slot_id <= 0) {
+            $error_message = "Invalid booking ID.";
+        } elseif (empty($slot_datetime)) {
+            $error_message = "Booking date and time are required.";
+        } elseif ($total_amount < 0) {
+            $error_message = "Service price cannot be negative.";
+        } else {
+            // Verify that this booking belongs to the current saloon and get confirmation_id
+            $verify_stmt = $conn->prepare("SELECT slot_id, saloon_id, confirmation_id FROM slots WHERE slot_id = ? AND saloon_id = ?");
+            $verify_stmt->bind_param("ii", $slot_id, $saloon_id);
+            $verify_stmt->execute();
+            $verify_result = $verify_stmt->get_result();
+
+            if ($verify_result && $verify_result->num_rows === 1) {
+                $row = $verify_result->fetch_assoc();
+                $confirmation_id = (int)$row['confirmation_id'];
+                $verify_stmt->close();
+
+                // Update confirmation (time and price)
+                $update_conf_stmt = $conn->prepare("UPDATE confirmation SET slot_time = ?, total_amount = ? WHERE confirmation_id = ?");
+                $update_conf_stmt->bind_param("sdi", $slot_datetime, $total_amount, $confirmation_id);
+
+                // Update slot status
+                $update_slot_stmt = $conn->prepare("UPDATE slots SET status = ? WHERE slot_id = ? AND saloon_id = ?");
+                $update_slot_stmt->bind_param("sii", $status, $slot_id, $saloon_id);
+
+                $conn->begin_transaction();
+                try {
+                    if ($update_conf_stmt->execute() && $update_slot_stmt->execute()) {
+                        $conn->commit();
+                        $success_message = "Booking updated successfully.";
+                    } else {
+                        $conn->rollback();
+                        $error_message = "Failed to update booking: " . $conn->error;
+                    }
+                } catch (Exception $e) {
+                    $conn->rollback();
+                    $error_message = "Failed to update booking: " . $e->getMessage();
+                }
+
+                $update_conf_stmt->close();
+                $update_slot_stmt->close();
+            } else {
+                $error_message = "Booking not found for this saloon.";
+                $verify_stmt->close();
+            }
+        }
+    }
+
+    // Cancel booking
+    if (isset($_POST['action']) && $_POST['action'] === 'cancel_booking') {
+        $slot_id = isset($_POST['slot_id']) ? (int)$_POST['slot_id'] : 0;
+
+        if ($slot_id <= 0) {
+            $error_message = "Invalid booking ID.";
+        } else {
+            // Ensure the slot belongs to this saloon
+            $verify_stmt = $conn->prepare("SELECT slot_id FROM slots WHERE slot_id = ? AND saloon_id = ?");
+            $verify_stmt->bind_param("ii", $slot_id, $saloon_id);
+            $verify_stmt->execute();
+            $verify_result = $verify_stmt->get_result();
+
+            if ($verify_result && $verify_result->num_rows === 1) {
+                $verify_stmt->close();
+
+                $cancel_stmt = $conn->prepare("UPDATE slots SET status = 'cancelled' WHERE slot_id = ? AND saloon_id = ?");
+                $cancel_stmt->bind_param("ii", $slot_id, $saloon_id);
+
+                if ($cancel_stmt->execute()) {
+                    $success_message = "Booking cancelled successfully.";
+                } else {
+                    $error_message = "Failed to cancel booking: " . $conn->error;
+                }
+
+                $cancel_stmt->close();
+            } else {
+                $error_message = "Booking not found for this saloon.";
+                $verify_stmt->close();
+            }
+        }
+    }
 }
 
 // Fetch saloon profile
@@ -166,6 +365,121 @@ if (isset($_GET['edit_service'])) {
             break;
         }
     }
+}
+
+// Fetch upcoming saloon schedule entries (next 30 days) if table exists
+$saloon_schedule_entries = [];
+$table_check = $conn->query("SHOW TABLES LIKE 'saloon_date_availability'");
+if ($table_check && $table_check->num_rows > 0) {
+    $today = date('Y-m-d');
+    $endDate = date('Y-m-d', strtotime('+30 days'));
+
+    $schedule_stmt = $conn->prepare("
+        SELECT id, date, start_time, end_time, is_available
+        FROM saloon_date_availability
+        WHERE saloon_id = ?
+          AND date >= ?
+          AND date <= ?
+        ORDER BY date, start_time
+    ");
+    $schedule_stmt->bind_param("iss", $saloon_id, $today, $endDate);
+    $schedule_stmt->execute();
+    $schedule_result = $schedule_stmt->get_result();
+
+    while ($row = $schedule_result->fetch_assoc()) {
+        $saloon_schedule_entries[] = $row;
+    }
+    $schedule_stmt->close();
+}
+
+// Fetch all bookings for this saloon
+$bookings = [];
+// Check if service_id column exists in slots table
+$columns_result = $conn->query("SHOW COLUMNS FROM slots LIKE 'service_id'");
+$has_service_id = ($columns_result && $columns_result->num_rows > 0);
+
+if ($has_service_id) {
+    $bookings_stmt = $conn->prepare("SELECT s.slot_id, s.status, c.slot_time, c.total_amount,
+                                            cu.name AS customer_name,
+                                            sv.name AS service_name
+                                     FROM slots s
+                                     INNER JOIN confirmation c ON s.confirmation_id = c.confirmation_id
+                                     INNER JOIN customer cu ON s.customer_id = cu.customer_id
+                                     INNER JOIN services sv ON s.service_id = sv.service_id
+                                     WHERE s.saloon_id = ?
+                                     ORDER BY c.slot_time DESC");
+} else {
+    $bookings_stmt = $conn->prepare("SELECT s.slot_id, s.status, c.slot_time, c.total_amount,
+                                            cu.name AS customer_name
+                                     FROM slots s
+                                     INNER JOIN confirmation c ON s.confirmation_id = c.confirmation_id
+                                     INNER JOIN customer cu ON s.customer_id = cu.customer_id
+                                     WHERE s.saloon_id = ?
+                                     ORDER BY c.slot_time DESC");
+}
+
+if ($bookings_stmt) {
+    $bookings_stmt->bind_param("i", $saloon_id);
+    $bookings_stmt->execute();
+    $bookings_result = $bookings_stmt->get_result();
+
+    while ($row = $bookings_result->fetch_assoc()) {
+        if (!$has_service_id) {
+            // Old schema without service_id - use generic service name
+            $row['service_name'] = 'Service';
+        }
+        $bookings[] = $row;
+    }
+
+    $bookings_stmt->close();
+}
+
+// Fetch reviews for this saloon
+$reviews = [];
+$table_check = $conn->query("SHOW TABLES LIKE 'reviews'");
+if ($table_check && $table_check->num_rows > 0) {
+    // Check if service_id column exists in slots table
+    $columns_result = $conn->query("SHOW COLUMNS FROM slots LIKE 'service_id'");
+    $has_service_id = ($columns_result && $columns_result->num_rows > 0);
+    
+    if ($has_service_id) {
+        $reviews_stmt = $conn->prepare("SELECT r.review_id, r.rating, r.review_text, r.created_at, 
+                                       c.name as customer_name, c.customer_id,
+                                       conf.slot_time, sv.name as service_name
+                                       FROM reviews r
+                                       INNER JOIN customer c ON r.customer_id = c.customer_id
+                                       INNER JOIN slots s ON r.slot_id = s.slot_id
+                                       INNER JOIN confirmation conf ON s.confirmation_id = conf.confirmation_id
+                                       LEFT JOIN services sv ON s.service_id = sv.service_id
+                                       WHERE r.saloon_id = ?
+                                       ORDER BY r.created_at DESC");
+    } else {
+        $reviews_stmt = $conn->prepare("SELECT r.review_id, r.rating, r.review_text, r.created_at, 
+                                       c.name as customer_name, c.customer_id,
+                                       conf.slot_time, 'Service' as service_name
+                                       FROM reviews r
+                                       INNER JOIN customer c ON r.customer_id = c.customer_id
+                                       INNER JOIN slots s ON r.slot_id = s.slot_id
+                                       INNER JOIN confirmation conf ON s.confirmation_id = conf.confirmation_id
+                                       WHERE r.saloon_id = ?
+                                       ORDER BY r.created_at DESC");
+    }
+    $reviews_stmt->bind_param("i", $saloon_id);
+    $reviews_stmt->execute();
+    $reviews_result = $reviews_stmt->get_result();
+    // #region agent log
+    file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'run1','hypothesisId'=>'A','location'=>'saloon_dashboard.php:468','message'=>'Query executed, fetching reviews','data'=>['saloon_id'=>$saloon_id,'num_rows'=>$reviews_result->num_rows],'timestamp'=>time()*1000])."\n", FILE_APPEND);
+    // #endregion
+    while ($review_row = $reviews_result->fetch_assoc()) {
+        // #region agent log
+        file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'run1','hypothesisId'=>'B','location'=>'saloon_dashboard.php:471','message'=>'Raw review row from database','data'=>['review_id'=>$review_row['review_id']??null,'rating'=>$review_row['rating']??null,'review_text_raw'=>$review_row['review_text']??null,'review_text_type'=>gettype($review_row['review_text']??null),'review_text_length'=>isset($review_row['review_text'])?strlen($review_row['review_text']):0,'review_text_is_null'=>is_null($review_row['review_text']??null),'review_text_is_empty'=>empty($review_row['review_text']??null),'customer_name'=>$review_row['customer_name']??null,'created_at'=>$review_row['created_at']??null],'timestamp'=>time()*1000])."\n", FILE_APPEND);
+        // #endregion
+        $reviews[] = $review_row;
+    }
+    // #region agent log
+    file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'run1','hypothesisId'=>'C','location'=>'saloon_dashboard.php:475','message'=>'All reviews fetched','data'=>['total_reviews'=>count($reviews)],'timestamp'=>time()*1000])."\n", FILE_APPEND);
+    // #endregion
+    $reviews_stmt->close();
 }
 
 $conn->close();
@@ -250,6 +564,111 @@ $conn->close();
 
         .header-btn.primary:hover {
             background: #5a141f;
+        }
+
+        .header-btn.profile {
+            background: transparent;
+            color: #7A1C2C;
+            border-color: #7A1C2C;
+        }
+
+        .header-btn.profile:hover {
+            background: #7A1C2C;
+            color: white;
+        }
+
+        /* Profile Modal */
+        .profile-modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 2000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .profile-modal-overlay.active {
+            display: flex;
+        }
+
+        .profile-modal {
+            background: white;
+            border-radius: 8px;
+            padding: 0;
+            max-width: 500px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+            border: 1px solid #e5e5e5;
+        }
+
+        .profile-modal-header {
+            padding: 24px;
+            border-bottom: 1px solid #e5e5e5;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .profile-modal-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: #1a1a1a;
+            margin: 0;
+        }
+
+        .profile-modal-close {
+            background: none;
+            border: none;
+            font-size: 24px;
+            color: #666;
+            cursor: pointer;
+            padding: 0;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+
+        .profile-modal-close:hover {
+            background: #f5f5f5;
+            color: #1a1a1a;
+        }
+
+        .profile-modal-body {
+            padding: 24px;
+        }
+
+        .profile-info-row {
+            margin-bottom: 20px;
+        }
+
+        .profile-info-label {
+            font-size: 12px;
+            font-weight: 600;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 6px;
+        }
+
+        .profile-info-value {
+            font-size: 16px;
+            color: #1a1a1a;
+            word-wrap: break-word;
+        }
+
+        .profile-info-value.empty {
+            color: #999;
+            font-style: italic;
         }
 
         /* Main Container */
@@ -473,6 +892,100 @@ $conn->close();
             margin-bottom: 16px;
         }
 
+        /* Reviews Styles */
+        .reviews-list {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .review-item {
+            background: #fafafa;
+            border: 1px solid #e5e5e5;
+            border-radius: 8px;
+            padding: 20px;
+            transition: box-shadow 0.2s;
+        }
+
+        .review-item:hover {
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .review-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .review-customer-info {
+            flex: 1;
+        }
+
+        .review-customer-name {
+            font-weight: 600;
+            color: #1a1a1a;
+            font-size: 16px;
+            margin-bottom: 4px;
+        }
+
+        .review-date {
+            font-size: 12px;
+            color: #666;
+        }
+
+        .review-rating {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .star {
+            font-size: 20px;
+            color: #d0d0d0;
+            line-height: 1;
+        }
+
+        .star.filled {
+            color: #FFD700;
+        }
+
+        .rating-number {
+            font-size: 14px;
+            font-weight: 600;
+            color: #666;
+            margin-left: 8px;
+        }
+
+        .review-text {
+            color: #1a1a1a;
+            font-size: 14px;
+            line-height: 1.6;
+            margin-bottom: 12px;
+            padding: 12px;
+            background: white;
+            border-radius: 6px;
+            border-left: 3px solid #7A1C2C;
+        }
+
+        .review-service {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: #666;
+        }
+
+        .review-service-label {
+            font-weight: 600;
+        }
+
+        .review-service-name {
+            color: #7A1C2C;
+        }
+
         /* Chat Styles */
         .card.chat-container {
             padding: 0;
@@ -676,6 +1189,64 @@ $conn->close();
             padding: 40px;
         }
 
+        /* Modal Styles for Edit Booking */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.4);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1100;
+        }
+
+        .modal {
+            background: #ffffff;
+            border-radius: 8px;
+            padding: 24px 24px 20px;
+            max-width: 480px;
+            width: 100%;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+            border: 1px solid #e5e5e5;
+        }
+
+        .modal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+        }
+
+        .modal-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #1a1a1a;
+        }
+
+        .modal-close {
+            background: transparent;
+            border: none;
+            font-size: 20px;
+            cursor: pointer;
+            color: #666;
+            padding: 4px 8px;
+            line-height: 1;
+        }
+
+        .modal-close:hover {
+            color: #1a1a1a;
+        }
+
+        .modal-footer {
+            margin-top: 16px;
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+
         /* Responsive */
         @media (max-width: 768px) {
             .container {
@@ -712,7 +1283,7 @@ $conn->close();
         <div class="header-content">
             <a href="customer_dashboard.php" class="brand">GoGlam</a>
             <div class="header-actions">
-                <span style="color: #666; font-size: 14px;"><?php echo htmlspecialchars($_SESSION['name'] ?? 'Saloon'); ?></span>
+                <button class="header-btn profile" onclick="openProfileModal()"><?php echo htmlspecialchars($_SESSION['name'] ?? 'Saloon'); ?></button>
                 <a href="logout.php" class="header-btn">Logout</a>
             </div>
         </div>
@@ -736,11 +1307,15 @@ $conn->close();
             </div>
         <?php endif; ?>
 
+
         <!-- Tabs -->
         <div class="tabs">
             <button class="tab active" onclick="switchTab('profile')">Profile</button>
             <button class="tab" onclick="switchTab('services')">Services</button>
+            <button class="tab" onclick="switchTab('schedule')">Schedule</button>
+            <button class="tab" onclick="switchTab('bookings')">All Bookings</button>
             <button class="tab" onclick="switchTab('chat')">Chat</button>
+            <button class="tab" onclick="switchTab('feedback')">Feedback</button>
         </div>
 
         <!-- Profile Tab -->
@@ -871,6 +1446,101 @@ $conn->close();
             </div>
         </div>
 
+        <!-- Schedule Tab -->
+        <div id="schedule-tab" class="tab-content">
+            <div class="card">
+                <h2 class="card-title">Manage Schedule</h2>
+                <p style="color: #666; font-size: 14px; margin-bottom: 20px;">
+                    Define specific dates and times when your saloon is available or unavailable for bookings.
+                </p>
+
+                <form method="POST" action="saloon_dashboard.php" style="margin-bottom: 24px;">
+                    <input type="hidden" name="action" value="add_schedule">
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="schedule_date">Date *</label>
+                            <input type="date" id="schedule_date" name="schedule_date" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="start_time">Start Time *</label>
+                            <input type="time" id="start_time" name="start_time" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="end_time">End Time *</label>
+                            <input type="time" id="end_time" name="end_time" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="status">Status</label>
+                            <select id="status" name="status">
+                                <option value="available">Available</option>
+                                <option value="unavailable">Not Available</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary">Add Schedule Entry</button>
+                </form>
+
+                <div>
+                    <h3 style="font-size: 16px; font-weight: 600; margin-bottom: 12px;">Upcoming Schedule (next 30 days)</h3>
+                    <?php if (empty($saloon_schedule_entries)): ?>
+                        <div class="empty-state">
+                            <p>No schedule entries defined yet.</p>
+                            <p style="font-size: 14px; color: #999;">Add your first schedule entry above to control when customers can book.</p>
+                        </div>
+                    <?php else: ?>
+                        <div style="overflow-x: auto;">
+                            <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                                <thead>
+                                    <tr style="background: #fafafa; border-bottom: 1px solid #e5e5e5;">
+                                        <th style="text-align: left; padding: 8px;">Date</th>
+                                        <th style="text-align: left; padding: 8px;">Time Range</th>
+                                        <th style="text-align: left; padding: 8px;">Status</th>
+                                        <th style="text-align: right; padding: 8px;">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($saloon_schedule_entries as $entry): ?>
+                                        <tr style="border-bottom: 1px solid #f0f0f0;">
+                                            <td style="padding: 8px;">
+                                                <?php
+                                                    $d = new DateTime($entry['date']);
+                                                    echo $d->format('M d, Y (D)');
+                                                ?>
+                                            </td>
+                                            <td style="padding: 8px;">
+                                                <?php echo htmlspecialchars(substr($entry['start_time'], 0, 5)); ?> - 
+                                                <?php echo htmlspecialchars(substr($entry['end_time'], 0, 5)); ?>
+                                            </td>
+                                            <td style="padding: 8px;">
+                                                <?php if ((int)$entry['is_available'] === 1): ?>
+                                                    <span style="display: inline-block; padding: 4px 8px; border-radius: 4px; background: #F0F9F5; color: #1a7a2c; font-size: 12px; font-weight: 600;">
+                                                        Available
+                                                    </span>
+                                                <?php else: ?>
+                                                    <span style="display: inline-block; padding: 4px 8px; border-radius: 4px; background: #F9F0F5; color: #7A1C2C; font-size: 12px; font-weight: 600;">
+                                                        Not Available
+                                                    </span>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td style="padding: 8px; text-align: right;">
+                                                <form method="POST" action="saloon_dashboard.php" style="display: inline;" onsubmit="return confirm('Are you sure you want to delete this schedule entry?');">
+                                                    <input type="hidden" name="action" value="delete_schedule">
+                                                    <input type="hidden" name="schedule_id" value="<?php echo (int)$entry['id']; ?>">
+                                                    <button type="submit" class="btn btn-danger btn-small">Delete</button>
+                                                </form>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+
         <!-- Chat Tab -->
         <div id="chat-tab" class="tab-content">
             <div class="card chat-container">
@@ -908,6 +1578,280 @@ $conn->close();
                 </div>
             </div>
         </div>
+
+        <!-- Feedback Tab -->
+        <div id="feedback-tab" class="tab-content">
+            <div class="card">
+                <h2 class="card-title">Customer Feedback & Reviews</h2>
+                <p style="color: #666; font-size: 14px; margin-bottom: 20px;">
+                    View all ratings and reviews from your customers.
+                </p>
+
+                <?php if (empty($reviews)): ?>
+                    <div class="empty-state">
+                        <p>No reviews yet.</p>
+                        <p style="font-size: 14px; color: #999;">Customer reviews will appear here once they rate your services.</p>
+                    </div>
+                <?php else: ?>
+                    <div class="reviews-list">
+                        <?php foreach ($reviews as $review): ?>
+                            <?php
+                                $reviewDate = new DateTime($review['created_at']);
+                                $formattedDate = $reviewDate->format('M d, Y');
+                                $formattedTime = $reviewDate->format('g:i A');
+                            ?>
+                            <div class="review-item">
+                                <div class="review-header">
+                                    <div class="review-customer-info">
+                                        <div class="review-customer-name"><?php echo htmlspecialchars($review['customer_name']); ?></div>
+                                        <div class="review-date"><?php echo htmlspecialchars($formattedDate . ' at ' . $formattedTime); ?></div>
+                                    </div>
+                                    <div class="review-rating">
+                                        <?php
+                                            $rating = (int)$review['rating'];
+                                            for ($i = 1; $i <= 5; $i++):
+                                        ?>
+                                            <span class="star <?php echo $i <= $rating ? 'filled' : ''; ?>">★</span>
+                                        <?php endfor; ?>
+                                        <span class="rating-number"><?php echo $rating; ?>/5</span>
+                                    </div>
+                                </div>
+                                <div class="review-text">
+                                    <?php 
+                                        // #region agent log
+                                        file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'post-fix','hypothesisId'=>'D','location'=>'saloon_dashboard.php:1611','message'=>'Before processing review_text','data'=>['review_id'=>$review['review_id']??null,'review_text_before'=>isset($review['review_text'])?$review['review_text']:null,'review_text_type'=>gettype($review['review_text']??null),'review_text_is_set'=>isset($review['review_text']),'review_text_is_null'=>is_null($review['review_text']??null)],'timestamp'=>time()*1000])."\n", FILE_APPEND);
+                                        // #endregion
+                                        $reviewText = isset($review['review_text']) ? trim($review['review_text']) : '';
+                                        // Treat "0" as empty (corrupted data from previous bug)
+                                        if ($reviewText === '0') {
+                                            $reviewText = '';
+                                        }
+                                        // #region agent log
+                                        file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'post-fix','hypothesisId'=>'E','location'=>'saloon_dashboard.php:1614','message'=>'After trim review_text','data'=>['review_id'=>$review['review_id']??null,'review_text_after_trim'=>$reviewText,'review_text_length'=>strlen($reviewText),'review_text_is_empty'=>empty($reviewText),'will_show_text'=>!empty($reviewText)],'timestamp'=>time()*1000])."\n", FILE_APPEND);
+                                        // #endregion
+                                        if (!empty($reviewText)) {
+                                            // #region agent log
+                                            file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'post-fix','hypothesisId'=>'F','location'=>'saloon_dashboard.php:1617','message'=>'Displaying review text','data'=>['review_id'=>$review['review_id']??null],'timestamp'=>time()*1000])."\n", FILE_APPEND);
+                                            // #endregion
+                                            echo nl2br(htmlspecialchars($reviewText));
+                                        } else {
+                                            // #region agent log
+                                            file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'post-fix','hypothesisId'=>'G','location'=>'saloon_dashboard.php:1620','message'=>'Showing no comment provided','data'=>['review_id'=>$review['review_id']??null,'review_text_was'=>$reviewText],'timestamp'=>time()*1000])."\n", FILE_APPEND);
+                                            // #endregion
+                                            echo '<span style="color: #999; font-style: italic;">No comment provided</span>';
+                                        }
+                                    ?>
+                                </div>
+                                <div class="review-service">
+                                    <span class="review-service-label">Service:</span>
+                                    <span class="review-service-name"><?php echo htmlspecialchars($review['service_name']); ?></span>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                <?php endif; ?>
+            </div>
+        </div>
+
+        <!-- All Bookings Tab -->
+        <div id="bookings-tab" class="tab-content">
+            <div class="card">
+                <h2 class="card-title">All Bookings</h2>
+                <p style="color: #666; font-size: 14px; margin-bottom: 20px;">
+                    View and manage all bookings for your saloon. You can edit booking time, change service price, or cancel a booking.
+                </p>
+
+                <?php if (empty($bookings)): ?>
+                    <div class="empty-state">
+                        <p>No bookings found yet.</p>
+                        <p style="font-size: 14px; color: #999;">Bookings will appear here once customers book your services.</p>
+                    </div>
+                <?php else: ?>
+                    <div style="overflow-x: auto;">
+                        <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                            <thead>
+                                <tr style="background: #fafafa; border-bottom: 1px solid #e5e5e5;">
+                                    <th style="text-align: left; padding: 8px;">Customer</th>
+                                    <th style="text-align: left; padding: 8px;">Service</th>
+                                    <th style="text-align: left; padding: 8px;">Date &amp; Time</th>
+                                    <th style="text-align: left; padding: 8px;">Price</th>
+                                    <th style="text-align: left; padding: 8px;">Status</th>
+                                    <th style="text-align: right; padding: 8px;">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($bookings as $booking): ?>
+                                    <?php
+                                        $slotDateTime = new DateTime($booking['slot_time']);
+                                        $displayDateTime = $slotDateTime->format('M d, Y g:i A');
+                                        $inputDateTime = $slotDateTime->format('Y-m-d\TH:i');
+
+                                        $statusLabel = htmlspecialchars($booking['status']);
+                                        $statusBg = '#f5f5f5';
+                                        $statusColor = '#666';
+
+                                        if ($booking['status'] === 'confirmed') {
+                                            $statusBg = '#F0F9F5';
+                                            $statusColor = '#1a7a2c';
+                                        } elseif ($booking['status'] === 'completed') {
+                                            $statusBg = '#E8F0FF';
+                                            $statusColor = '#1a4a7a';
+                                        } elseif ($booking['status'] === 'cancelled') {
+                                            $statusBg = '#F9F0F5';
+                                            $statusColor = '#7A1C2C';
+                                        }
+                                    ?>
+                                    <tr style="border-bottom: 1px solid #f0f0f0;">
+                                        <td style="padding: 8px;">
+                                            <?php echo htmlspecialchars($booking['customer_name']); ?>
+                                        </td>
+                                        <td style="padding: 8px;">
+                                            <?php echo htmlspecialchars($booking['service_name'] ?? 'Service'); ?>
+                                        </td>
+                                        <td style="padding: 8px;">
+                                            <?php echo htmlspecialchars($displayDateTime); ?>
+                                        </td>
+                                        <td style="padding: 8px;">
+                                            ৳<?php echo number_format((float)$booking['total_amount'], 2); ?>
+                                        </td>
+                                        <td style="padding: 8px;">
+                                            <span style="display: inline-block; padding: 4px 8px; border-radius: 4px; background: <?php echo $statusBg; ?>; color: <?php echo $statusColor; ?>; font-size: 12px; font-weight: 600;">
+                                                <?php echo $statusLabel; ?>
+                                            </span>
+                                        </td>
+                                        <td style="padding: 8px; text-align: right; white-space: nowrap;">
+                                            <button
+                                                type="button"
+                                                class="btn btn-secondary btn-small"
+                                                onclick="openEditBookingModal(this)"
+                                                data-slot-id="<?php echo (int)$booking['slot_id']; ?>"
+                                                data-customer-name="<?php echo htmlspecialchars($booking['customer_name'], ENT_QUOTES); ?>"
+                                                data-service-name="<?php echo htmlspecialchars($booking['service_name'] ?? 'Service', ENT_QUOTES); ?>"
+                                                data-datetime="<?php echo htmlspecialchars($inputDateTime); ?>"
+                                                data-price="<?php echo htmlspecialchars($booking['total_amount']); ?>"
+                                                data-status="<?php echo htmlspecialchars($booking['status']); ?>"
+                                            >
+                                                Edit
+                                            </button>
+
+                                            <form method="POST" action="saloon_dashboard.php" style="display: inline;" onsubmit="return confirm('Are you sure you want to cancel this booking?');">
+                                                <input type="hidden" name="action" value="cancel_booking">
+                                                <input type="hidden" name="slot_id" value="<?php echo (int)$booking['slot_id']; ?>">
+                                                <button type="submit" class="btn btn-danger btn-small">Cancel</button>
+                                            </form>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                <?php endif; ?>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Booking Modal -->
+    <div id="editBookingModalOverlay" class="modal-overlay">
+        <div class="modal">
+            <div class="modal-header">
+                <div class="modal-title" id="editBookingTitle">Edit Booking</div>
+                <button type="button" class="modal-close" onclick="closeEditBookingModal()">&times;</button>
+            </div>
+            <form method="POST" action="saloon_dashboard.php">
+                <input type="hidden" name="action" value="update_booking">
+                <input type="hidden" name="slot_id" id="editBookingSlotId">
+
+                <div class="form-group">
+                    <label for="editBookingDateTime">Booking Date &amp; Time *</label>
+                    <input type="datetime-local" id="editBookingDateTime" name="slot_datetime" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="editBookingPrice">Service Price *</label>
+                    <input type="number" id="editBookingPrice" name="total_amount" min="0" step="0.01" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="editBookingStatus">Status</label>
+                    <select id="editBookingStatus" name="status">
+                        <option value="confirmed">Confirmed</option>
+                        <option value="completed">Completed</option>
+                        <option value="cancelled">Cancelled</option>
+                    </select>
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" onclick="closeEditBookingModal()">Close</button>
+                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Profile Modal -->
+    <div id="profileModalOverlay" class="profile-modal-overlay" onclick="closeProfileModal(event)">
+        <div class="profile-modal" onclick="event.stopPropagation()">
+            <div class="profile-modal-header">
+                <h2 class="profile-modal-title">Saloon Profile</h2>
+                <button type="button" class="profile-modal-close" onclick="closeProfileModal()">&times;</button>
+            </div>
+            <div class="profile-modal-body">
+                <?php if ($saloon): ?>
+                    <div class="profile-info-row">
+                        <div class="profile-info-label">Saloon Name</div>
+                        <div class="profile-info-value"><?php echo htmlspecialchars($saloon['name']); ?></div>
+                    </div>
+
+                    <div class="profile-info-row">
+                        <div class="profile-info-label">Email</div>
+                        <div class="profile-info-value"><?php echo htmlspecialchars($saloon['email']); ?></div>
+                    </div>
+
+                    <div class="profile-info-row">
+                        <div class="profile-info-label">Registration ID</div>
+                        <div class="profile-info-value"><?php echo htmlspecialchars($saloon['reg_id'] ?? 'N/A'); ?></div>
+                    </div>
+
+                    <div class="profile-info-row">
+                        <div class="profile-info-label">Phone Number</div>
+                        <div class="profile-info-value"><?php echo htmlspecialchars($saloon['phone_no'] ?? 'N/A'); ?></div>
+                    </div>
+
+                    <div class="profile-info-row">
+                        <div class="profile-info-label">Address</div>
+                        <div class="profile-info-value"><?php echo htmlspecialchars($saloon['address'] ?? 'N/A'); ?></div>
+                    </div>
+
+                    <div class="profile-info-row">
+                        <div class="profile-info-label">Location</div>
+                        <div class="profile-info-value">
+                            <?php
+                            if ($saloon['location_id']) {
+                                $location_name = 'N/A';
+                                foreach ($locations as $loc) {
+                                    if ($loc['location_id'] == $saloon['location_id']) {
+                                        $location_name = htmlspecialchars($loc['name']);
+                                        break;
+                                    }
+                                }
+                                echo $location_name;
+                            } else {
+                                echo 'Not set';
+                            }
+                            ?>
+                        </div>
+                    </div>
+
+                    <div class="profile-info-row">
+                        <div class="profile-info-label">Saloon ID</div>
+                        <div class="profile-info-value"><?php echo htmlspecialchars($saloon['saloon_id']); ?></div>
+                    </div>
+
+                <?php else: ?>
+                    <div class="profile-info-value empty">Error loading saloon profile.</div>
+                <?php endif; ?>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -928,6 +1872,73 @@ $conn->close();
             // Add active class to clicked tab
             event.target.classList.add('active');
         }
+
+        // Edit Booking modal helpers
+        function openEditBookingModal(button) {
+            var slotId = button.getAttribute('data-slot-id');
+            var customerName = button.getAttribute('data-customer-name') || 'Customer';
+            var serviceName = button.getAttribute('data-service-name') || 'Service';
+            var datetime = button.getAttribute('data-datetime') || '';
+            var price = button.getAttribute('data-price') || '';
+            var status = button.getAttribute('data-status') || 'confirmed';
+
+            var titleEl = document.getElementById('editBookingTitle');
+            if (titleEl) {
+                titleEl.textContent = 'Edit Booking - ' + customerName + ' (' + serviceName + ')';
+            }
+
+            document.getElementById('editBookingSlotId').value = slotId;
+            document.getElementById('editBookingDateTime').value = datetime;
+            document.getElementById('editBookingPrice').value = price;
+
+            var statusSelect = document.getElementById('editBookingStatus');
+            if (statusSelect) {
+                statusSelect.value = status;
+            }
+
+            var overlay = document.getElementById('editBookingModalOverlay');
+            if (overlay) {
+                overlay.style.display = 'flex';
+            }
+        }
+
+        function closeEditBookingModal() {
+            var overlay = document.getElementById('editBookingModalOverlay');
+            if (overlay) {
+                overlay.style.display = 'none';
+            }
+        }
+
+        // Profile Modal Functions
+        function openProfileModal() {
+            var overlay = document.getElementById('profileModalOverlay');
+            if (overlay) {
+                overlay.classList.add('active');
+            }
+        }
+
+        function closeProfileModal(event) {
+            // If event is provided and user clicked on overlay (not modal), close it
+            if (event && event.target.id === 'profileModalOverlay') {
+                var overlay = document.getElementById('profileModalOverlay');
+                if (overlay) {
+                    overlay.classList.remove('active');
+                }
+            } else {
+                // Close button clicked or called directly
+                var overlay = document.getElementById('profileModalOverlay');
+                if (overlay) {
+                    overlay.classList.remove('active');
+                }
+            }
+        }
+
+        // Close profile modal on Escape key
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') {
+                closeProfileModal();
+            }
+        });
 
         // Auto-hide success messages after 5 seconds
         document.addEventListener('DOMContentLoaded', function() {

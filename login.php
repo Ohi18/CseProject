@@ -87,12 +87,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                             $stmt->close();
                             $conn->close();
                             
-                            // Redirect based on user type
-                            if ($user_type === 'saloon') {
-                                header("Location: saloon_dashboard.php");
-                            } else {
-                                header("Location: customer_dashboard.php");
-                            }
+                            // Redirect to general dashboard, which will route based on user_type
+                            header("Location: index.php");
                             exit();
                         }
                     } else {

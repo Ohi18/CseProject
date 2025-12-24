@@ -39,69 +39,83 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['action']) && $_POST['a
     if ($saloon_id <= 0 || $service_id <= 0 || empty($slot_datetime)) {
         $error_message = "Invalid booking data. Please try again.";
     } else {
-        // Get service price from range (extract numeric value)
-        $service_stmt = $conn->prepare("SELECT `range` FROM services WHERE service_id = ? AND saloon_id = ?");
-        $service_stmt->bind_param("ii", $service_id, $saloon_id);
-        $service_stmt->execute();
-        $service_result = $service_stmt->get_result();
-        if ($service_result->num_rows > 0) {
-            $service_row = $service_result->fetch_assoc();
-            $service_range = $service_row['range'];
-            // Extract price from range (simple extraction - assumes first number found)
-            preg_match('/[\d.]+/', $service_range, $matches);
-            $total_amount = isset($matches[0]) ? (float)$matches[0] : 0.00;
-        } else {
-            $total_amount = 0.00;
-        }
-        $service_stmt->close();
-        
-        // Check if service_id column exists in slots table
-        $columns_result = $conn->query("SHOW COLUMNS FROM slots LIKE 'service_id'");
-        $has_service_id = ($columns_result && $columns_result->num_rows > 0);
-        
-        // Check if slot is still available
-        if ($has_service_id) {
-            $check_stmt = $conn->prepare("SELECT s.slot_id FROM slots s INNER JOIN confirmation c ON s.confirmation_id = c.confirmation_id WHERE s.saloon_id = ? AND s.service_id = ? AND c.slot_time = ? AND s.customer_id IS NOT NULL");
-            $check_stmt->bind_param("iis", $saloon_id, $service_id, $slot_datetime);
-        } else {
-            $check_stmt = $conn->prepare("SELECT s.slot_id FROM slots s INNER JOIN confirmation c ON s.confirmation_id = c.confirmation_id WHERE s.saloon_id = ? AND c.slot_time = ? AND s.customer_id IS NOT NULL");
-            $check_stmt->bind_param("is", $saloon_id, $slot_datetime);
-        }
-        $check_stmt->execute();
-        $check_result = $check_stmt->get_result();
-        if ($check_result->num_rows > 0) {
-            $error_message = "This time slot is no longer available. Please select another time.";
-        } else {
-            // Insert into confirmation table
-            $confirmation_stmt = $conn->prepare("INSERT INTO confirmation (total_amount, slot_time, customer_id) VALUES (?, ?, ?)");
-            $confirmation_stmt->bind_param("dsi", $total_amount, $slot_datetime, $customer_id);
-            
-            if ($confirmation_stmt->execute()) {
-                $confirmation_id = $conn->insert_id;
-                
-                // Insert into slots table (check if service_id column exists)
-                if ($has_service_id) {
-                    $slots_stmt = $conn->prepare("INSERT INTO slots (saloon_id, customer_id, confirmation_id, service_id, status) VALUES (?, ?, ?, ?, 'confirmed')");
-                    $slots_stmt->bind_param("iiii", $saloon_id, $customer_id, $confirmation_id, $service_id);
-                } else {
-                    $slots_stmt = $conn->prepare("INSERT INTO slots (saloon_id, customer_id, confirmation_id, status) VALUES (?, ?, ?, 'confirmed')");
-                    $slots_stmt->bind_param("iii", $saloon_id, $customer_id, $confirmation_id);
-                }
-                
-                if ($slots_stmt->execute()) {
-                    $success_message = "Confirmed";
-                } else {
-                    $error_message = "Failed to create booking slot: " . $conn->error;
-                    // Rollback confirmation
-                    $conn->query("DELETE FROM confirmation WHERE confirmation_id = $confirmation_id");
-                }
-                $slots_stmt->close();
-            } else {
-                $error_message = "Failed to confirm booking: " . $conn->error;
+        // Validate that slot time is not in the past
+        try {
+            $slot_datetime_obj = new DateTime($slot_datetime);
+            $now = new DateTime();
+            if ($slot_datetime_obj < $now) {
+                $error_message = "Cannot book appointments in the past. Please select a future time slot.";
             }
-            $confirmation_stmt->close();
+        } catch (Exception $e) {
+            $error_message = "Invalid date/time format. Please try again.";
         }
-        $check_stmt->close();
+        
+        // Continue with booking logic if no validation errors
+        if (empty($error_message)) {
+            // Get service price from range (extract numeric value)
+            $service_stmt = $conn->prepare("SELECT `range` FROM services WHERE service_id = ? AND saloon_id = ?");
+            $service_stmt->bind_param("ii", $service_id, $saloon_id);
+            $service_stmt->execute();
+            $service_result = $service_stmt->get_result();
+            if ($service_result->num_rows > 0) {
+                $service_row = $service_result->fetch_assoc();
+                $service_range = $service_row['range'];
+                // Extract price from range (simple extraction - assumes first number found)
+                preg_match('/[\d.]+/', $service_range, $matches);
+                $total_amount = isset($matches[0]) ? (float)$matches[0] : 0.00;
+            } else {
+                $total_amount = 0.00;
+            }
+            $service_stmt->close();
+            
+            // Check if service_id column exists in slots table
+            $columns_result = $conn->query("SHOW COLUMNS FROM slots LIKE 'service_id'");
+            $has_service_id = ($columns_result && $columns_result->num_rows > 0);
+            
+            // Check if slot is still available
+            if ($has_service_id) {
+                $check_stmt = $conn->prepare("SELECT s.slot_id FROM slots s INNER JOIN confirmation c ON s.confirmation_id = c.confirmation_id WHERE s.saloon_id = ? AND s.service_id = ? AND c.slot_time = ? AND s.customer_id IS NOT NULL");
+                $check_stmt->bind_param("iis", $saloon_id, $service_id, $slot_datetime);
+            } else {
+                $check_stmt = $conn->prepare("SELECT s.slot_id FROM slots s INNER JOIN confirmation c ON s.confirmation_id = c.confirmation_id WHERE s.saloon_id = ? AND c.slot_time = ? AND s.customer_id IS NOT NULL");
+                $check_stmt->bind_param("is", $saloon_id, $slot_datetime);
+            }
+            $check_stmt->execute();
+            $check_result = $check_stmt->get_result();
+            if ($check_result->num_rows > 0) {
+                $error_message = "This time slot is no longer available. Please select another time.";
+            } else {
+                // Insert into confirmation table
+                $confirmation_stmt = $conn->prepare("INSERT INTO confirmation (total_amount, slot_time, customer_id) VALUES (?, ?, ?)");
+                $confirmation_stmt->bind_param("dsi", $total_amount, $slot_datetime, $customer_id);
+                
+                if ($confirmation_stmt->execute()) {
+                    $confirmation_id = $conn->insert_id;
+                    
+                    // Insert into slots table (check if service_id column exists)
+                    if ($has_service_id) {
+                        $slots_stmt = $conn->prepare("INSERT INTO slots (saloon_id, customer_id, confirmation_id, service_id, status) VALUES (?, ?, ?, ?, 'confirmed')");
+                        $slots_stmt->bind_param("iiii", $saloon_id, $customer_id, $confirmation_id, $service_id);
+                    } else {
+                        $slots_stmt = $conn->prepare("INSERT INTO slots (saloon_id, customer_id, confirmation_id, status) VALUES (?, ?, ?, 'confirmed')");
+                        $slots_stmt->bind_param("iii", $saloon_id, $customer_id, $confirmation_id);
+                    }
+                    
+                    if ($slots_stmt->execute()) {
+                        $success_message = "Confirmed";
+                    } else {
+                        $error_message = "Failed to create booking slot: " . $conn->error;
+                        // Rollback confirmation
+                        $conn->query("DELETE FROM confirmation WHERE confirmation_id = $confirmation_id");
+                    }
+                    $slots_stmt->close();
+                } else {
+                    $error_message = "Failed to confirm booking: " . $conn->error;
+                }
+                $confirmation_stmt->close();
+            }
+            $check_stmt->close();
+        }
     }
     
     // Redirect to prevent form resubmission (moved outside else block to handle validation errors)
@@ -155,11 +169,23 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['action']) && $_POST['a
                 $review_row = $check_review_result->fetch_assoc();
                 // Ensure review_text is properly handled (empty string becomes null)
                 $review_text_for_update = (!empty(trim($review_text))) ? trim($review_text) : null;
+                // #region agent log
+                file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'save-review','hypothesisId'=>'L','location'=>'customer_dashboard.php:171','message'=>'Preparing to update review','data'=>['review_id'=>$review_row['review_id'],'rating'=>$rating,'review_text_original'=>$review_text,'review_text_for_update'=>$review_text_for_update],'timestamp'=>time()*1000])."\n", FILE_APPEND);
+                // #endregion
                 $update_stmt = $conn->prepare("UPDATE reviews SET rating = ?, review_text = ? WHERE review_id = ?");
                 $update_stmt->bind_param("isi", $rating, $review_text_for_update, $review_row['review_id']);
+                // #region agent log
+                file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'save-review','hypothesisId'=>'M','location'=>'customer_dashboard.php:174','message'=>'Executing update with bind_param','data'=>['bind_types'=>'iss','review_text_value'=>$review_text_for_update],'timestamp'=>time()*1000])."\n", FILE_APPEND);
+                // #endregion
                 if ($update_stmt->execute()) {
+                    // #region agent log
+                    file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'save-review','hypothesisId'=>'N','location'=>'customer_dashboard.php:177','message'=>'Review updated successfully','data'=>['review_id'=>$review_row['review_id']],'timestamp'=>time()*1000])."\n", FILE_APPEND);
+                    // #endregion
                     $success_message = "Review updated successfully!";
                 } else {
+                    // #region agent log
+                    file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'save-review','hypothesisId'=>'O','location'=>'customer_dashboard.php:180','message'=>'Review update failed','data'=>['error'=>$conn->error],'timestamp'=>time()*1000])."\n", FILE_APPEND);
+                    // #endregion
                     $error_message = "Failed to update review: " . $conn->error;
                 }
                 $update_stmt->close();
@@ -167,11 +193,23 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['action']) && $_POST['a
                 // Insert new review
                 // Ensure review_text is properly handled (empty string becomes null)
                 $review_text_for_insert = (!empty(trim($review_text))) ? trim($review_text) : null;
+                // #region agent log
+                file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'save-review','hypothesisId'=>'H','location'=>'customer_dashboard.php:183','message'=>'Preparing to insert review','data'=>['saloon_id'=>$saloon_id,'customer_id'=>$customer_id,'slot_id'=>$slot_id,'rating'=>$rating,'review_text_original'=>$review_text,'review_text_for_insert'=>$review_text_for_insert,'review_text_type'=>gettype($review_text_for_insert)],'timestamp'=>time()*1000])."\n", FILE_APPEND);
+                // #endregion
                 $insert_stmt = $conn->prepare("INSERT INTO reviews (saloon_id, customer_id, slot_id, rating, review_text) VALUES (?, ?, ?, ?, ?)");
-                $insert_stmt->bind_param("iiisi", $saloon_id, $customer_id, $slot_id, $rating, $review_text_for_insert);
+                $insert_stmt->bind_param("iiiss", $saloon_id, $customer_id, $slot_id, $rating, $review_text_for_insert);
+                // #region agent log
+                file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'save-review','hypothesisId'=>'I','location'=>'customer_dashboard.php:186','message'=>'Executing insert with bind_param','data'=>['bind_types'=>'iiiss','review_text_value'=>$review_text_for_insert],'timestamp'=>time()*1000])."\n", FILE_APPEND);
+                // #endregion
                 if ($insert_stmt->execute()) {
+                    // #region agent log
+                    file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'save-review','hypothesisId'=>'J','location'=>'customer_dashboard.php:189','message'=>'Review inserted successfully','data'=>['insert_id'=>$conn->insert_id],'timestamp'=>time()*1000])."\n", FILE_APPEND);
+                    // #endregion
                     $success_message = "Thank you for your review!";
                 } else {
+                    // #region agent log
+                    file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'save-review','hypothesisId'=>'K','location'=>'customer_dashboard.php:192','message'=>'Review insert failed','data'=>['error'=>$conn->error],'timestamp'=>time()*1000])."\n", FILE_APPEND);
+                    // #endregion
                     $error_message = "Failed to submit review: " . $conn->error;
                 }
                 $insert_stmt->close();
@@ -224,6 +262,61 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['action']) && $_POST['a
     }
 }
 
+// Handle profile update
+if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['action']) && $_POST['action'] === 'update_profile') {
+    $name = trim($_POST['name'] ?? '');
+    $email = trim($_POST['email'] ?? '');
+    $phone_no = trim($_POST['phone_no'] ?? '');
+    $gender = trim($_POST['gender'] ?? '');
+    
+    // Validate inputs
+    if (empty($name)) {
+        $error_message = "Name is required.";
+    } elseif (empty($email)) {
+        $error_message = "Email is required.";
+    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $error_message = "Invalid email format.";
+    } elseif (empty($phone_no)) {
+        $error_message = "Phone number is required.";
+    } elseif (empty($gender)) {
+        $error_message = "Gender is required.";
+    } else {
+        // Check if email already exists for another customer
+        $check_stmt = $conn->prepare("SELECT customer_id FROM customer WHERE email = ? AND customer_id != ?");
+        $check_stmt->bind_param("si", $email, $customer_id);
+        $check_stmt->execute();
+        $check_result = $check_stmt->get_result();
+        
+        if ($check_result->num_rows > 0) {
+            $error_message = "This email is already registered by another user.";
+            $check_stmt->close();
+        } else {
+            $check_stmt->close();
+            
+            // Update customer profile
+            $update_stmt = $conn->prepare("UPDATE customer SET name=?, email=?, phone_no=?, gender=? WHERE customer_id=?");
+            $update_stmt->bind_param("ssssi", $name, $email, $phone_no, $gender, $customer_id);
+            
+            if ($update_stmt->execute()) {
+                $success_message = "Profile updated successfully!";
+                $_SESSION['name'] = $name; // Update session name
+            } else {
+                $error_message = "Failed to update profile: " . $conn->error;
+            }
+            $update_stmt->close();
+        }
+    }
+    
+    // Redirect to prevent form resubmission
+    if (!empty($success_message)) {
+        header("Location: customer_dashboard.php?profile_updated=1");
+        exit();
+    } elseif (!empty($error_message)) {
+        header("Location: customer_dashboard.php?profile_error=" . urlencode($error_message));
+        exit();
+    }
+}
+
 // Get saloon_id from URL if viewing a specific saloon
 $selected_saloon_id = isset($_GET['saloon_id']) ? (int)$_GET['saloon_id'] : null;
 $view_mode = $selected_saloon_id ? 'detail' : 'list';
@@ -246,6 +339,16 @@ if (isset($_GET['review_success']) && $_GET['review_success'] == '1') {
 // Show error message if redirected after review error
 if (isset($_GET['review_error'])) {
     $error_message = htmlspecialchars(urldecode($_GET['review_error']));
+}
+
+// Show success message if redirected after profile update
+if (isset($_GET['profile_updated']) && $_GET['profile_updated'] == '1') {
+    $success_message = "Profile updated successfully!";
+}
+
+// Show error message if redirected after profile update error
+if (isset($_GET['profile_error'])) {
+    $error_message = htmlspecialchars(urldecode($_GET['profile_error']));
 }
 
 // Fetch all saloons for listing with services and prices
@@ -895,10 +998,66 @@ $conn->close();
             transition: border-color 0.2s;
         }
 
+        /* Make search input wider for full addresses */
+        .form-group:first-child {
+            max-width: 800px;
+        }
+
+        #search {
+            padding-right: 50px;
+        }
+
         .form-group input:focus,
         .form-group select:focus {
             outline: none;
             border-color: #7A1C2C;
+        }
+
+        .gps-btn-dashboard {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 32px;
+            height: 32px;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: #7A1C2C;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+
+        .gps-btn-dashboard:hover {
+            background: rgba(122, 28, 44, 0.1);
+        }
+
+        .gps-btn-dashboard:active {
+            background: rgba(122, 28, 44, 0.2);
+        }
+
+        .gps-btn-dashboard.loading {
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+
+        .gps-btn-dashboard.active {
+            background: rgba(122, 28, 44, 0.15);
+            color: #5a141f;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .saloon-distance {
+            margin-left: 8px;
+            font-size: 12px;
+            color: #666;
+            font-weight: 400;
         }
 
         .btn {
@@ -1715,6 +1874,7 @@ $conn->close();
                         </div>
                     </div>
                 </div>
+                <button onclick="openUpdateProfileModal()" class="header-btn" style="margin-right: 10px;">Update Profile</button>
                 <a href="logout.php" class="header-btn">Logout</a>
             </div>
         </div>
@@ -1924,12 +2084,32 @@ $conn->close();
             <h1 class="page-title">Browse Saloons</h1>
             <p class="page-subtitle">Find and explore saloons near you</p>
 
+            <!-- Messages (shown in list view) -->
+            <?php if (!empty($error_message)): ?>
+                <div class="message error-message">
+                    <?php echo htmlspecialchars($error_message); ?>
+                </div>
+            <?php endif; ?>
+
+            <?php if (!empty($success_message)): ?>
+                <div class="message success-message">
+                    <?php echo htmlspecialchars($success_message); ?>
+                </div>
+            <?php endif; ?>
+
             <!-- Search and Filter -->
             <div class="search-filter-container">
                 <div class="search-filter-row">
-                    <div class="form-group">
+                    <div class="form-group" style="position: relative;">
                         <label for="search">Search Saloons</label>
-                        <input type="text" id="search" placeholder="Search by name, address, or location..." onkeyup="filterSaloons()">
+                        <div style="position: relative;">
+                            <input type="text" id="search" placeholder="Search by name, address, or location..." onkeyup="filterSaloons()">
+                            <button type="button" class="gps-btn-dashboard" id="gpsBtnDashboard" aria-label="Find nearby saloons using GPS" title="Find nearby saloons" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: 32px; height: 32px; border: none; border-radius: 6px; background: transparent; color: #7A1C2C; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.2s;">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="currentColor"/>
+                                </svg>
+                            </button>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label for="location-filter">Filter by Location</label>
@@ -1986,14 +2166,15 @@ $conn->close();
                 <div class="saloons-grid" id="saloons-grid">
                     <?php foreach ($saloons as $saloon): ?>
                         <div class="saloon-card" data-name="<?php echo htmlspecialchars(strtolower($saloon['name'])); ?>" 
-                             data-address="<?php echo htmlspecialchars(strtolower($saloon['address'] ?? '')); ?>"
+                             data-address="<?php echo htmlspecialchars($saloon['address'] ?? ''); ?>"
                              data-location="<?php echo htmlspecialchars(strtolower($saloon['location_name'] ?? '')); ?>"
                              data-services="<?php echo htmlspecialchars(implode(',', $saloon['services_list'] ?? [])); ?>"
                              data-min-price="<?php echo $saloon['min_price'] ?? 0; ?>"
-                             data-max-price="<?php echo $saloon['max_price'] ?? 0; ?>">
+                             data-max-price="<?php echo $saloon['max_price'] ?? 0; ?>"
+                             data-distance="">
                             <div class="saloon-card-name"><?php echo htmlspecialchars($saloon['name']); ?></div>
                             <?php if (!empty($saloon['location_name'])): ?>
-                                <div class="saloon-card-info"><strong>Location:</strong> <?php echo htmlspecialchars($saloon['location_name']); ?></div>
+                                <div class="saloon-card-info"><strong>Location:</strong> <?php echo htmlspecialchars($saloon['location_name']); ?> <span class="saloon-distance" style="display: none; margin-left: 8px; font-size: 12px; color: #666;"></span></div>
                             <?php endif; ?>
                             <?php if (!empty($saloon['address'])): ?>
                                 <div class="saloon-card-info"><strong>Address:</strong> <?php echo htmlspecialchars($saloon['address']); ?></div>
@@ -2060,41 +2241,92 @@ $conn->close();
         </div>
     </div>
 
+    <!-- Update Profile Modal -->
+    <div id="updateProfileModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title">Update Profile</h2>
+                <span class="close" onclick="closeUpdateProfileModal()">&times;</span>
+            </div>
+            <form method="POST" action="customer_dashboard.php" id="updateProfileForm">
+                <input type="hidden" name="action" value="update_profile">
+                <?php if (isset($_GET['saloon_id'])): ?>
+                    <input type="hidden" name="saloon_id" value="<?php echo (int)$_GET['saloon_id']; ?>">
+                <?php endif; ?>
+                
+                <div class="form-group">
+                    <label for="profileName">Full Name *</label>
+                    <input type="text" id="profileName" name="name" value="<?php echo htmlspecialchars($customer_info['name'] ?? ''); ?>" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="profileEmail">Email *</label>
+                    <input type="email" id="profileEmail" name="email" value="<?php echo htmlspecialchars($customer_info['email'] ?? ''); ?>" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="profilePhone">Phone Number *</label>
+                    <input type="text" id="profilePhone" name="phone_no" value="<?php echo htmlspecialchars($customer_info['phone_no'] ?? ''); ?>" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="profileGender">Gender *</label>
+                    <select id="profileGender" name="gender" required>
+                        <option value="">Select Gender</option>
+                        <option value="Male" <?php echo (isset($customer_info['gender']) && $customer_info['gender'] === 'Male') ? 'selected' : ''; ?>>Male</option>
+                        <option value="Female" <?php echo (isset($customer_info['gender']) && $customer_info['gender'] === 'Female') ? 'selected' : ''; ?>>Female</option>
+                        <option value="Other" <?php echo (isset($customer_info['gender']) && $customer_info['gender'] === 'Other') ? 'selected' : ''; ?>>Other</option>
+                    </select>
+                </div>
+                
+                <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 20px;">
+                    <button type="button" class="btn btn-secondary" onclick="closeUpdateProfileModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Update Profile</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <script>
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/19dbfd65-af3c-4960-a38f-4b58e38246f6',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'customer_dashboard.php:2313',message:'Script initialization',data:{profileUpdated:<?php echo isset($_GET['profile_updated']) ? 'true' : 'false'; ?>,profileError:<?php echo isset($_GET['profile_error']) ? 'true' : 'false'; ?>,successMessage:'<?php echo isset($success_message) ? addslashes($success_message) : ''; ?>',errorMessage:'<?php echo isset($error_message) ? addslashes($error_message) : ''; ?>'},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion agent log
+
         // Global variables for booking
         let selectedSaloonId = null;
         let selectedServiceId = null;
-        let serviceAvailability = null; // Store availability data for current service
+        // Date-specific availability keyed by 'YYYY-MM-DD' -> [{ start_time, end_time, is_available }]
+        let availabilityByDate = null;
 
-        // Helper function to check if a time slot is available based on service availability
+        // Helper function to check if a time slot is available based on date-specific availability
         function isSlotAvailableForService(date, hour) {
-            // If no availability restrictions, all slots are available
-            if (!serviceAvailability || serviceAvailability.length === 0) {
-                return true;
+            // If no availability has been defined, no slots are available
+            if (!availabilityByDate || Object.keys(availabilityByDate).length === 0) {
+                return false;
             }
 
-            const dayOfWeek = date.getDay(); // 0=Sunday, 1=Monday, etc.
+            const dateKey = date.toISOString().split('T')[0];
             const timeStr = String(hour).padStart(2, '0') + ':00:00';
-            
-            // Check if there's availability for this day
-            const dayAvailability = serviceAvailability.filter(avail => avail.day_of_week === dayOfWeek);
-            
-            if (dayAvailability.length === 0) {
-                return false; // No availability for this day
+
+            const entries = availabilityByDate[dateKey] || [];
+            if (entries.length === 0) {
+                return false;
             }
 
-            // Check if the time slot falls within any available time range
-            for (let avail of dayAvailability) {
-                const startTime = avail.start_time;
-                const endTime = avail.end_time;
-                
-                // Compare times (HH:MM:SS format)
+            // Check if the time slot falls within any available time range for that date
+            for (let entry of entries) {
+                if (parseInt(entry.is_available) !== 1) {
+                    continue;
+                }
+                const startTime = entry.start_time;
+                const endTime = entry.end_time;
+
                 if (timeStr >= startTime && timeStr < endTime) {
                     return true;
                 }
             }
 
-            return false; // Time slot not in any available range
+            return false; // Time slot not in any available range for the selected date
         }
         let selectedServiceName = '';
         let selectedServicePrice = '';
@@ -2166,6 +2398,7 @@ $conn->close();
             const bodySubcategory = document.getElementById('body-subcategory-filter').value;
             const priceSort = document.getElementById('price-sort').value;
             const cards = Array.from(document.querySelectorAll('.saloon-card'));
+            const maxDistanceKm = 30; // Maximum distance in kilometers
 
             // Service category names for partial matching
             const categoryNames = {
@@ -2189,6 +2422,15 @@ $conn->close();
                 const address = card.getAttribute('data-address');
                 const location = card.getAttribute('data-location');
                 const services = card.getAttribute('data-services') || '';
+                
+                // If GPS is active, filter by distance first
+                if (window.isGpsActiveDashboard && window.userLocationDashboard) {
+                    const distance = parseFloat(card.getAttribute('data-distance')) || Infinity;
+                    if (distance > maxDistanceKm) {
+                        card.style.display = 'none';
+                        return false;
+                    }
+                }
                 
                 // Search filter
                 const matchesSearch = searchTerm === '' || 
@@ -2231,9 +2473,19 @@ $conn->close();
                 return isVisible;
             });
 
-            // Price sorting
-            if (priceSort !== '' && visibleCards.length > 0) {
-                const grid = document.getElementById('saloons-grid');
+            const grid = document.getElementById('saloons-grid');
+            
+            // Distance sorting (if GPS is active, prioritize distance)
+            if (window.isGpsActiveDashboard && visibleCards.length > 0) {
+                visibleCards.sort((a, b) => {
+                    const distA = parseFloat(a.getAttribute('data-distance')) || Infinity;
+                    const distB = parseFloat(b.getAttribute('data-distance')) || Infinity;
+                    return distA - distB;
+                });
+                visibleCards.forEach(card => grid.appendChild(card));
+            }
+            // Price sorting (only if GPS is not active)
+            else if (priceSort !== '' && visibleCards.length > 0) {
                 const sortedCards = visibleCards.sort((a, b) => {
                     const priceA = parseFloat(a.getAttribute('data-max-price')) || 0;
                     const priceB = parseFloat(b.getAttribute('data-max-price')) || 0;
@@ -2258,8 +2510,747 @@ $conn->close();
             document.getElementById('body-subcategory-filter').value = '';
             document.getElementById('price-sort').value = '';
             document.getElementById('body-subcategory-group').style.display = 'none';
+            
+            // Clear GPS if active
+            if (window.isGpsActiveDashboard) {
+                const gpsBtn = document.getElementById('gpsBtnDashboard');
+                if (gpsBtn) {
+                    gpsBtn.classList.remove('active');
+                }
+                window.isGpsActiveDashboard = false;
+                window.userLocationDashboard = null;
+                
+                // Hide distances
+                const cards = document.querySelectorAll('.saloon-card');
+                cards.forEach(card => {
+                    const distanceSpan = card.querySelector('.saloon-distance');
+                    if (distanceSpan) {
+                        distanceSpan.style.display = 'none';
+                    }
+                    card.setAttribute('data-distance', '');
+                });
+            }
+            
             filterSaloons();
         }
+
+        // GPS Location Search Functionality for Dashboard
+        console.log('Initializing GPS functionality for dashboard...');
+        const gpsBtnDashboard = document.getElementById('gpsBtnDashboard');
+        console.log('GPS button lookup result:', gpsBtnDashboard);
+        console.log('GPS button exists:', !!gpsBtnDashboard);
+        
+        if (!gpsBtnDashboard) {
+            console.error('CRITICAL: GPS button not found! Make sure the button has id="gpsBtnDashboard"');
+        }
+        
+        window.userLocationDashboard = null;
+        window.isGpsActiveDashboard = false;
+        window.gpsWatchIdDashboard = null; // Store watchPosition ID for cleanup
+        window.isRequestingLocationDashboard = false; // Prevent multiple simultaneous requests
+        window.locationRequestTimeoutDashboard = null; // Timeout to reset stuck state
+        window.locationRefreshIntervalDashboard = null; // Interval for periodic location updates
+        const geocodeCacheDashboard = JSON.parse(sessionStorage.getItem('geocodeCache') || '{}');
+
+        // Haversine formula to calculate distance between two coordinates
+        function calculateDistanceDashboard(lat1, lon1, lat2, lon2) {
+            const R = 6371; // Earth's radius in km
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = 
+                Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon/2) * Math.sin(dLon/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c; // Distance in km
+        }
+
+        // Format distance for display
+        function formatDistanceDashboard(km) {
+            if (km < 1) {
+                return Math.round(km * 1000) + ' m away';
+            }
+            return km.toFixed(1) + ' km away';
+        }
+
+        // Helper function to construct address from address components
+        function constructAddressFromComponentsDashboard(addressObj) {
+            if (!addressObj) return null;
+            
+            const parts = [];
+            
+            // Try to build a readable address in order of preference
+            if (addressObj.road || addressObj.street) {
+                parts.push(addressObj.road || addressObj.street);
+            }
+            if (addressObj.house_number) {
+                parts.unshift(addressObj.house_number); // Put house number first
+            }
+            if (addressObj.suburb || addressObj.neighbourhood) {
+                parts.push(addressObj.suburb || addressObj.neighbourhood);
+            }
+            if (addressObj.city || addressObj.town || addressObj.village) {
+                parts.push(addressObj.city || addressObj.town || addressObj.village);
+            }
+            if (addressObj.state || addressObj.region) {
+                parts.push(addressObj.state || addressObj.region);
+            }
+            if (addressObj.country) {
+                parts.push(addressObj.country);
+            }
+            
+            return parts.length > 0 ? parts.join(', ') : null;
+        }
+
+        // Reverse geocode coordinates to get address using Photon (Komoot) API
+        async function reverseGeocodeDashboard(lat, lon, retryCount = 0) {
+            const maxRetries = 2;
+            
+            console.log('Reverse geocoding coordinates (dashboard):', lat, lon, 'attempt:', retryCount + 1);
+            
+            // Create cache key for coordinates
+            const cacheKey = `${lat.toFixed(4)},${lon.toFixed(4)}`;
+            const reverseGeocodeCache = JSON.parse(sessionStorage.getItem('reverseGeocodeCache') || '{}');
+            
+            // Check cache first - but only if it's a valid address (not null/empty)
+            if (reverseGeocodeCache[cacheKey] && reverseGeocodeCache[cacheKey].trim() !== '') {
+                console.log('Using cached address for coordinates:', cacheKey, reverseGeocodeCache[cacheKey]);
+                return reverseGeocodeCache[cacheKey];
+            } else if (reverseGeocodeCache[cacheKey] === null || reverseGeocodeCache[cacheKey] === '') {
+                // Clear invalid cache entry
+                delete reverseGeocodeCache[cacheKey];
+                sessionStorage.setItem('reverseGeocodeCache', JSON.stringify(reverseGeocodeCache));
+                console.log('Cleared invalid cache entry for:', cacheKey);
+            }
+
+            // Small delay for retries (Photon is more lenient with rate limits)
+            if (retryCount > 0) {
+                const delay = 1000 * retryCount; // 1 second per retry
+                console.log(`Waiting ${delay}ms before retry...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+
+            try {
+                const url = `https://photon.komoot.io/reverse?lat=${lat}&lon=${lon}`;
+                console.log('Fetching reverse geocode from:', url);
+                
+                // Create AbortController for timeout handling
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+                
+                const response = await fetch(url, {
+                    signal: controller.signal
+                });
+                
+                clearTimeout(timeoutId);
+                
+                if (!response.ok) {
+                    console.error('Reverse geocoding API response not OK:', {
+                        status: response.status,
+                        statusText: response.statusText,
+                        url: url
+                    });
+                    
+                    // Retry if we have retries left
+                    if (retryCount < maxRetries) {
+                        console.log(`Retrying reverse geocoding (${retryCount + 1}/${maxRetries})...`);
+                        return await reverseGeocodeDashboard(lat, lon, retryCount + 1);
+                    }
+                    
+                    throw new Error(`Reverse geocoding failed: ${response.status} ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                console.log('Reverse geocoding response (dashboard):', JSON.stringify(data, null, 2));
+                
+                // Photon returns GeoJSON format
+                if (data && data.features && data.features.length > 0) {
+                    const feature = data.features[0];
+                    const properties = feature.properties || {};
+                    
+                    // Construct address from Photon properties
+                    const addressParts = [];
+                    
+                    // Photon uses different property names
+                    if (properties.housenumber) addressParts.push(properties.housenumber);
+                    if (properties.street) addressParts.push(properties.street);
+                    if (properties.city || properties.locality) addressParts.push(properties.city || properties.locality);
+                    if (properties.state || properties.region) addressParts.push(properties.state || properties.region);
+                    if (properties.country) addressParts.push(properties.country);
+                    
+                    // Fallback: use name if available
+                    if (addressParts.length === 0 && properties.name) {
+                        addressParts.push(properties.name);
+                    }
+                    
+                    const address = addressParts.length > 0 ? addressParts.join(', ') : null;
+                    
+                    if (address && address.trim() !== '') {
+                        // Cache the result only if it's valid
+                        reverseGeocodeCache[cacheKey] = address;
+                        sessionStorage.setItem('reverseGeocodeCache', JSON.stringify(reverseGeocodeCache));
+                        console.log('Address cached successfully (dashboard):', address);
+                        return address;
+                    } else {
+                        console.warn('No valid address found in reverse geocoding results (dashboard). Full response:', JSON.stringify(data, null, 2));
+                        // Retry if we have retries left
+                        if (retryCount < maxRetries) {
+                            console.log('Retrying (attempt', retryCount + 2, 'of', maxRetries + 1, ')...');
+                            return await reverseGeocodeDashboard(lat, lon, retryCount + 1);
+                        } else {
+                            console.error('All retry attempts exhausted (dashboard). Could not get address.');
+                        }
+                    }
+                } else {
+                    console.warn('No features in reverse geocoding response (dashboard). Full response:', JSON.stringify(data, null, 2));
+                    // Retry if we have retries left
+                    if (retryCount < maxRetries) {
+                        console.log('Retrying (attempt', retryCount + 2, 'of', maxRetries + 1, ')...');
+                        return await reverseGeocodeDashboard(lat, lon, retryCount + 1);
+                    } else {
+                        console.error('All retry attempts exhausted (dashboard). Could not get address.');
+                    }
+                }
+            } catch (error) {
+                console.error('Reverse geocoding error for coordinates', lat, lon, ':', {
+                    error: error.message,
+                    name: error.name,
+                    stack: error.stack
+                });
+                
+                // Retry on network errors if we have retries left
+                if (retryCount < maxRetries && (error.name === 'TypeError' || error.name === 'AbortError')) {
+                    console.log(`Retrying reverse geocoding after error (${retryCount + 1}/${maxRetries})...`);
+                    return await reverseGeocodeDashboard(lat, lon, retryCount + 1);
+                }
+            }
+            return null;
+        }
+
+        // Geocode address using Photon (Komoot) API
+        async function geocodeAddressDashboard(address) {
+            console.log('Geocoding address (dashboard):', address);
+            // Check cache first
+            if (geocodeCacheDashboard[address]) {
+                console.log('Using cached coordinates for:', address, geocodeCacheDashboard[address]);
+                return geocodeCacheDashboard[address];
+            }
+
+            try {
+                const encodedAddress = encodeURIComponent(address);
+                const url = `https://photon.komoot.io/api/?q=${encodedAddress}&limit=1`;
+                console.log('Fetching geocode from:', url);
+                
+                const response = await fetch(url);
+                
+                if (!response.ok) {
+                    console.error('Geocoding API response not OK:', response.status, response.statusText);
+                    throw new Error('Geocoding failed');
+                }
+                
+                const data = await response.json();
+                console.log('Geocoding response:', data);
+                
+                // Photon returns GeoJSON format with features array
+                if (data && data.features && data.features.length > 0) {
+                    const feature = data.features[0];
+                    const coords = {
+                        lat: parseFloat(feature.geometry.coordinates[1]), // Photon uses [lon, lat] format
+                        lon: parseFloat(feature.geometry.coordinates[0])
+                    };
+                    console.log('Geocoded coordinates:', coords);
+                    // Cache the result
+                    geocodeCacheDashboard[address] = coords;
+                    sessionStorage.setItem('geocodeCache', JSON.stringify(geocodeCacheDashboard));
+                    return coords;
+                } else {
+                    console.warn('No geocoding results for address:', address);
+                }
+            } catch (error) {
+                console.error('Geocoding error for address', address, ':', error);
+            }
+            return null;
+        }
+
+        // Stop watching location for dashboard
+        function stopWatchingLocationDashboard() {
+            try {
+                if (window.gpsWatchIdDashboard !== null && navigator.geolocation) {
+                    navigator.geolocation.clearWatch(window.gpsWatchIdDashboard);
+                    window.gpsWatchIdDashboard = null;
+                    console.log('Stopped watching location (dashboard)');
+                }
+                // Clear refresh interval
+                if (window.locationRefreshIntervalDashboard) {
+                    clearInterval(window.locationRefreshIntervalDashboard);
+                    window.locationRefreshIntervalDashboard = null;
+                    console.log('Cleared location refresh interval (dashboard)');
+                }
+                // Clear safety timeout
+                if (window.locationRequestTimeoutDashboard) {
+                    clearTimeout(window.locationRequestTimeoutDashboard);
+                    window.locationRequestTimeoutDashboard = null;
+                }
+            } catch (error) {
+                console.error('Error stopping location watch (dashboard):', error);
+                window.gpsWatchIdDashboard = null; // Reset even if clearWatch fails
+                if (window.locationRefreshIntervalDashboard) {
+                    clearInterval(window.locationRefreshIntervalDashboard);
+                    window.locationRefreshIntervalDashboard = null;
+                }
+                if (window.locationRequestTimeoutDashboard) {
+                    clearTimeout(window.locationRequestTimeoutDashboard);
+                    window.locationRequestTimeoutDashboard = null;
+                }
+            }
+        }
+
+        // Get user location with continuous watching
+        function getUserLocationDashboard() {
+            try {
+                console.log('getUserLocationDashboard() called');
+                console.log('navigator.geolocation exists:', !!navigator.geolocation);
+                console.log('Current GPS state:', { 
+                    isGpsActive: window.isGpsActiveDashboard, 
+                    isRequestingLocation: window.isRequestingLocationDashboard, 
+                    watchId: window.gpsWatchIdDashboard 
+                });
+                
+                // If GPS is already active, don't start a new request
+                if (window.isGpsActiveDashboard && window.userLocationDashboard) {
+                    console.log('GPS is already active, skipping new request');
+                    return;
+                }
+                
+                // Prevent multiple simultaneous requests
+                if (window.isRequestingLocationDashboard) {
+                    console.log('Location request already in progress, skipping...');
+                    return;
+                }
+                
+                if (!navigator.geolocation) {
+                    const errorMsg = 'Geolocation is not supported by your browser. Please use a modern browser like Chrome, Firefox, or Edge.';
+                    console.error(errorMsg);
+                    alert(errorMsg);
+                    return;
+                }
+
+                // Stop any existing watch and reset state
+                stopWatchingLocationDashboard();
+                window.isGpsActiveDashboard = false;
+                window.userLocationDashboard = null;
+
+                console.log('Requesting location with options:', {
+                    enableHighAccuracy: true,
+                    timeout: 30000,
+                    maximumAge: 0
+                });
+
+                if (gpsBtnDashboard) {
+                    gpsBtnDashboard.classList.add('loading');
+                    gpsBtnDashboard.disabled = true;
+                    console.log('GPS button set to loading state');
+                }
+
+                window.isRequestingLocationDashboard = true;
+
+                // Safety timeout: reset flag if request takes too long (35 seconds)
+                if (window.locationRequestTimeoutDashboard) {
+                    clearTimeout(window.locationRequestTimeoutDashboard);
+                }
+                window.locationRequestTimeoutDashboard = setTimeout(() => {
+                    console.warn('Location request timeout safety - resetting state (dashboard)');
+                    window.isRequestingLocationDashboard = false;
+                    if (gpsBtnDashboard) {
+                        gpsBtnDashboard.classList.remove('loading');
+                        gpsBtnDashboard.disabled = false;
+                    }
+                }, 35000); // 35 seconds (5 seconds after geolocation timeout)
+
+                navigator.geolocation.getCurrentPosition(
+                async (position) => {
+                    // Clear safety timeout
+                    if (window.locationRequestTimeoutDashboard) {
+                        clearTimeout(window.locationRequestTimeoutDashboard);
+                        window.locationRequestTimeoutDashboard = null;
+                    }
+                    
+                    window.isRequestingLocationDashboard = false;
+                    console.log('Location obtained successfully!', {
+                        latitude: position.coords.latitude,
+                        longitude: position.coords.longitude,
+                        accuracy: position.coords.accuracy
+                    });
+                    
+                    window.userLocationDashboard = {
+                        lat: position.coords.latitude,
+                        lon: position.coords.longitude
+                    };
+                    window.isGpsActiveDashboard = true;
+                    if (gpsBtnDashboard) {
+                        gpsBtnDashboard.classList.remove('loading');
+                        gpsBtnDashboard.classList.add('active');
+                        gpsBtnDashboard.disabled = false;
+                    }
+
+                    // Don't populate search bar - just calculate distances and filter
+                    console.log('Location obtained, calculating distances (dashboard)...');
+
+                    console.log('Processing salons with distance...');
+                    await processSalonsWithDistanceDashboard();
+                    console.log('Distance processing completed');
+
+                    // Use periodic refresh instead of watchPosition for better reliability
+                    // Clear any existing interval
+                    if (window.locationRefreshIntervalDashboard) {
+                        clearInterval(window.locationRefreshIntervalDashboard);
+                    }
+                    
+                    // Refresh location every 2 minutes if GPS is still active
+                    window.locationRefreshIntervalDashboard = setInterval(() => {
+                        if (window.isGpsActiveDashboard && !window.isRequestingLocationDashboard && navigator.geolocation) {
+                            console.log('Refreshing location (periodic update, dashboard)...');
+                            navigator.geolocation.getCurrentPosition(
+                                (updatedPosition) => {
+                                    if (window.isGpsActiveDashboard && window.userLocationDashboard) {
+                                        const distance = calculateDistanceDashboard(
+                                            window.userLocationDashboard.lat, window.userLocationDashboard.lon,
+                                            updatedPosition.coords.latitude, updatedPosition.coords.longitude
+                                        );
+                                        
+                                        if (distance > 0.1) { // More than 100 meters
+                                            console.log('Location changed significantly (dashboard):', distance, 'km');
+                                            window.userLocationDashboard = {
+                                                lat: updatedPosition.coords.latitude,
+                                                lon: updatedPosition.coords.longitude
+                                            };
+                                            processSalonsWithDistanceDashboard();
+                                        }
+                                    }
+                                },
+                                (error) => {
+                                    console.warn('Periodic location refresh failed (dashboard):', error.message);
+                                    // Don't stop GPS on periodic refresh failures
+                                },
+                                {
+                                    enableHighAccuracy: false,
+                                    timeout: 10000,
+                                    maximumAge: 120000 // Accept cached location up to 2 minutes old
+                                }
+                            );
+                        } else {
+                            // GPS deactivated, clear interval
+                            if (window.locationRefreshIntervalDashboard) {
+                                clearInterval(window.locationRefreshIntervalDashboard);
+                                window.locationRefreshIntervalDashboard = null;
+                            }
+                        }
+                    }, 120000); // Refresh every 2 minutes
+
+                    // Also use watchPosition for immediate updates (but with better error handling)
+                    if (window.isGpsActiveDashboard) {
+                        window.gpsWatchIdDashboard = navigator.geolocation.watchPosition(
+                            async (updatedPosition) => {
+                                try {
+                                    // Check if GPS is still active before processing update
+                                    if (!window.isGpsActiveDashboard) {
+                                        console.log('GPS deactivated, ignoring location update (dashboard)');
+                                        return;
+                                    }
+                                    
+                                    console.log('Location updated (dashboard):', {
+                                        latitude: updatedPosition.coords.latitude,
+                                        longitude: updatedPosition.coords.longitude,
+                                        accuracy: updatedPosition.coords.accuracy
+                                    });
+                                    
+                                    // Only update if position changed significantly (more than 100 meters)
+                                    if (window.userLocationDashboard) {
+                                        const distance = calculateDistanceDashboard(
+                                            window.userLocationDashboard.lat, window.userLocationDashboard.lon,
+                                            updatedPosition.coords.latitude, updatedPosition.coords.longitude
+                                        );
+                                        
+                                        if (distance > 0.1) { // More than 100 meters
+                                            console.log('Significant location change detected (dashboard):', distance, 'km');
+                                            window.userLocationDashboard = {
+                                                lat: updatedPosition.coords.latitude,
+                                                lon: updatedPosition.coords.longitude
+                                            };
+                                            
+                                            // Recalculate distances
+                                            await processSalonsWithDistanceDashboard();
+                                        }
+                                    } else {
+                                        window.userLocationDashboard = {
+                                            lat: updatedPosition.coords.latitude,
+                                            lon: updatedPosition.coords.longitude
+                                        };
+                                        await processSalonsWithDistanceDashboard();
+                                    }
+                                } catch (error) {
+                                    console.error('Error processing location update (dashboard):', error);
+                                }
+                            },
+                            (error) => {
+                                console.warn('Location watch error (dashboard):', error.message, error.code);
+                                // If watch fails critically, stop watching and reset state
+                                if (error.code === error.PERMISSION_DENIED || error.code === error.POSITION_UNAVAILABLE) {
+                                    console.log('Critical watch error, stopping GPS (dashboard)');
+                                    stopWatchingLocationDashboard();
+                                    window.isGpsActiveDashboard = false;
+                                    window.userLocationDashboard = null;
+                                    window.isRequestingLocationDashboard = false;
+                                    if (gpsBtnDashboard) {
+                                        gpsBtnDashboard.classList.remove('active');
+                                        gpsBtnDashboard.classList.remove('loading');
+                                        gpsBtnDashboard.disabled = false;
+                                    }
+                                }
+                            },
+                            {
+                                enableHighAccuracy: true,
+                                timeout: 30000,
+                                maximumAge: 60000
+                            }
+                        );
+                        console.log('Started watching position (dashboard), watchId:', window.gpsWatchIdDashboard);
+                    }
+                },
+                (error) => {
+                    try {
+                        // Clear safety timeout
+                        if (window.locationRequestTimeoutDashboard) {
+                            clearTimeout(window.locationRequestTimeoutDashboard);
+                            window.locationRequestTimeoutDashboard = null;
+                        }
+                        
+                        window.isRequestingLocationDashboard = false;
+                        console.error('Geolocation error:', {
+                            code: error.code,
+                            message: error.message,
+                            PERMISSION_DENIED: error.PERMISSION_DENIED,
+                            POSITION_UNAVAILABLE: error.POSITION_UNAVAILABLE,
+                            TIMEOUT: error.TIMEOUT
+                        });
+                        
+                        if (gpsBtnDashboard) {
+                            gpsBtnDashboard.classList.remove('loading');
+                            gpsBtnDashboard.classList.remove('active');
+                            gpsBtnDashboard.disabled = false;
+                        }
+                        
+                        // Reset state on error
+                        window.isGpsActiveDashboard = false;
+                        window.userLocationDashboard = null;
+                        stopWatchingLocationDashboard();
+                    } catch (err) {
+                        console.error('Error in geolocation error handler (dashboard):', err);
+                        // Force reset on handler error
+                        window.isRequestingLocationDashboard = false;
+                        if (window.locationRequestTimeoutDashboard) {
+                            clearTimeout(window.locationRequestTimeoutDashboard);
+                            window.locationRequestTimeoutDashboard = null;
+                        }
+                    }
+                    let errorMsg = 'Unable to get your location. ';
+                    let canRetry = false;
+                    let troubleshooting = '';
+                    
+                    switch(error.code) {
+                        case error.PERMISSION_DENIED:
+                            errorMsg += 'Location permission denied.';
+                            troubleshooting = '\n\nTroubleshooting:\n1. Click the lock/info icon in your browser address bar\n2. Allow location access\n3. Refresh the page and try again';
+                            break;
+                        case error.POSITION_UNAVAILABLE:
+                            errorMsg += 'Location information unavailable.';
+                            troubleshooting = '\n\nTroubleshooting:\n1. Check if location services are enabled on your device\n2. Make sure you have internet connection\n3. Try refreshing the page';
+                            canRetry = true;
+                            break;
+                        case error.TIMEOUT:
+                            errorMsg += 'Location request timed out.';
+                            troubleshooting = '\n\nTroubleshooting:\n1. Check your internet connection\n2. Make sure location services are enabled\n3. Try again in a few seconds';
+                            canRetry = true;
+                            break;
+                        default:
+                            errorMsg += 'An unknown error occurred.';
+                            troubleshooting = '\n\nTroubleshooting:\n1. Refresh the page\n2. Check browser console for errors\n3. Try a different browser';
+                            canRetry = true;
+                            break;
+                    }
+                    
+                    const fullMessage = errorMsg + troubleshooting;
+                    console.error('Full error message:', fullMessage);
+                    
+                    if (canRetry && confirm(fullMessage + '\n\nWould you like to try again?')) {
+                        console.log('User chose to retry');
+                        getUserLocationDashboard();
+                    } else if (!canRetry) {
+                        alert(fullMessage);
+                    } else {
+                        console.log('User cancelled retry');
+                    }
+                },
+                {
+                    enableHighAccuracy: false,
+                    timeout: 20000,
+                    maximumAge: 60000
+                }
+            );
+            } catch (error) {
+                console.error('Error in getUserLocationDashboard function:', error);
+                window.isRequestingLocationDashboard = false;
+                if (gpsBtnDashboard) {
+                    gpsBtnDashboard.classList.remove('loading');
+                    gpsBtnDashboard.classList.remove('active');
+                    gpsBtnDashboard.disabled = false;
+                }
+                alert('An error occurred with GPS functionality. Please try again.');
+            }
+        }
+
+        // Process all salons and calculate distances
+        async function processSalonsWithDistanceDashboard() {
+            console.log('processSalonsWithDistanceDashboard() called, userLocation:', window.userLocationDashboard);
+            if (!window.userLocationDashboard) {
+                console.error('No user location available');
+                return;
+            }
+            const grid = document.getElementById('saloons-grid');
+            if (!grid) {
+                console.error('Salons grid not found');
+                return;
+            }
+
+            const cards = Array.from(grid.getElementsByClassName('saloon-card'));
+            console.log('Found', cards.length, 'salon cards to process');
+            
+            if (cards.length === 0) {
+                console.warn('No salon cards found to process');
+                return;
+            }
+            
+            const distancePromises = [];
+
+            for (const card of cards) {
+                const address = card.getAttribute('data-address');
+                if (!address || address.trim() === '') {
+                    console.warn('Card has no address attribute or address is empty:', card);
+                    // Set distance to Infinity so it won't show
+                    card.setAttribute('data-distance', 'Infinity');
+                    continue;
+                }
+
+                distancePromises.push(
+                    geocodeAddressDashboard(address).then(coords => {
+                        if (coords) {
+                            const distance = calculateDistanceDashboard(
+                                window.userLocationDashboard.lat,
+                                window.userLocationDashboard.lon,
+                                coords.lat,
+                                coords.lon
+                            );
+                            console.log('Distance calculated for', address, ':', distance, 'km');
+                            card.setAttribute('data-distance', distance.toString());
+                            
+                            // Show distance in UI
+                            const distanceSpan = card.querySelector('.saloon-distance');
+                            if (distanceSpan) {
+                                distanceSpan.textContent = formatDistanceDashboard(distance);
+                                distanceSpan.style.display = 'inline';
+                            } else {
+                                console.warn('Distance span not found for card:', card);
+                            }
+                        } else {
+                            console.warn('Failed to geocode address:', address);
+                            // Set distance to Infinity so it won't show
+                            card.setAttribute('data-distance', 'Infinity');
+                        }
+                    }).catch(error => {
+                        console.error('Error calculating distance for address', address, ':', error);
+                        card.setAttribute('data-distance', 'Infinity');
+                    })
+                );
+            }
+
+            console.log('Waiting for all geocoding to complete...', distancePromises.length, 'promises');
+            try {
+                await Promise.all(distancePromises);
+                console.log('All geocoding completed, filtering and sorting by distance');
+            } catch (error) {
+                console.error('Error during distance calculation:', error);
+            }
+            
+            // Filter by 30km distance - trigger filterSaloons
+            if (typeof filterSaloons === 'function') {
+                filterSaloons();
+            } else {
+                console.warn('filterSaloons function not found, using sortByDistanceDashboard');
+                sortByDistanceDashboard();
+            }
+        }
+
+        // Sort cards by distance
+        function sortByDistanceDashboard() {
+            const grid = document.getElementById('saloons-grid');
+            if (!grid) return;
+            
+            const cards = Array.from(grid.getElementsByClassName('saloon-card'));
+            const visibleCards = cards.filter(card => card.style.display !== 'none');
+            
+            visibleCards.sort((a, b) => {
+                const distA = parseFloat(a.getAttribute('data-distance')) || Infinity;
+                const distB = parseFloat(b.getAttribute('data-distance')) || Infinity;
+                return distA - distB;
+            });
+
+            // Reorder in DOM
+            visibleCards.forEach(card => grid.appendChild(card));
+        }
+
+        // Toggle GPS search
+        console.log('Checking for GPS button and attaching event listener...');
+        if (gpsBtnDashboard) {
+            console.log('GPS button found, attaching event listener');
+            gpsBtnDashboard.addEventListener('click', () => {
+                console.log('GPS button clicked, isGpsActive:', window.isGpsActiveDashboard);
+                if (window.isGpsActiveDashboard) {
+                    // Deactivate GPS search
+                    window.isGpsActiveDashboard = false;
+                    window.userLocationDashboard = null;
+                    window.isRequestingLocationDashboard = false;
+                    stopWatchingLocationDashboard(); // Stop continuous tracking and intervals
+                    gpsBtnDashboard.classList.remove('active');
+                    
+                    // Hide distances
+                    const grid = document.getElementById('saloons-grid');
+                    if (grid) {
+                        const cards = Array.from(grid.getElementsByClassName('saloon-card'));
+                        cards.forEach(card => {
+                            const distanceSpan = card.querySelector('.saloon-distance');
+                            if (distanceSpan) {
+                                distanceSpan.style.display = 'none';
+                            }
+                            card.setAttribute('data-distance', '');
+                        });
+                    }
+                    
+                    // Reapply current filter
+                    filterSaloons();
+                } else {
+                    // Only activate if not already requesting
+                    if (!window.isRequestingLocationDashboard && !window.isGpsActiveDashboard) {
+                        console.log('Activating GPS search, calling getUserLocationDashboard()');
+                        getUserLocationDashboard();
+                    } else {
+                        console.log('GPS already active or request in progress, skipping (dashboard)');
+                    }
+                }
+            });
+        } else {
+            console.error('GPS button not found! Button ID: gpsBtnDashboard');
+        }
+
 
         function openSlotModal(saloonId, serviceId, serviceName, servicePrice) {
             selectedSaloonId = saloonId;
@@ -2268,7 +3259,7 @@ $conn->close();
             selectedServicePrice = servicePrice;
             selectedDate = null;
             selectedTime = null;
-            serviceAvailability = null; // Reset availability
+            availabilityByDate = null; // Reset availability
 
             document.getElementById('modalServiceName').textContent = serviceName;
             
@@ -2280,20 +3271,20 @@ $conn->close();
             document.getElementById('slotModal').style.display = 'block';
         }
 
-        // Fetch service availability from API
+        // Fetch service availability from API (date-specific)
         function fetchServiceAvailability(serviceId) {
             return fetch(`get_service_availability.php?service_id=${serviceId}`)
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
-                        serviceAvailability = data.availability || [];
+                        availabilityByDate = data.availability_by_date || {};
                     } else {
-                        serviceAvailability = []; // No restrictions if fetch fails
+                        availabilityByDate = {}; // No availability if fetch fails
                     }
                 })
                 .catch(error => {
                     console.error('Error fetching availability:', error);
-                    serviceAvailability = []; // Default to all available
+                    availabilityByDate = {}; // Default to no availability
                 });
         }
 
@@ -2323,10 +3314,12 @@ $conn->close();
                 dates.push(date);
             }
 
-            // Generate time slots (9 AM to 6 PM, hourly)
+            // Generate time slots (7 AM to 11 PM, hourly)
             const timeSlots = [];
-            for (let hour = 9; hour < 18; hour++) {
-                const timeStr = hour < 12 ? `${hour}:00 AM` : `${hour === 12 ? 12 : hour - 12}:00 PM`;
+            for (let hour = 7; hour <= 23; hour++) {
+                const hour12 = (hour % 12) === 0 ? 12 : (hour % 12);
+                const ampm = hour >= 12 ? 'PM' : 'AM';
+                const timeStr = `${hour12}:00 ${ampm}`;
                 timeSlots.push({
                     hour: hour,
                     display: timeStr,
@@ -2334,11 +3327,48 @@ $conn->close();
                 });
             }
 
+            // Build schedule summary from availabilityByDate
+            let scheduleSummaryHtml = '';
+            if (availabilityByDate && Object.keys(availabilityByDate).length > 0) {
+                const dateKeys = Object.keys(availabilityByDate).sort();
+                const maxEntriesToShow = 5;
+                const summaryParts = [];
+
+                for (let i = 0; i < dateKeys.length && summaryParts.length < maxEntriesToShow; i++) {
+                    const key = dateKeys[i];
+                    const dateObj = new Date(key);
+                    const friendlyDate = dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric', weekday: 'short' });
+                    const ranges = (availabilityByDate[key] || [])
+                        .filter(entry => parseInt(entry.is_available) === 1)
+                        .map(entry => {
+                            const start = entry.start_time.substring(0, 5);
+                            const end = entry.end_time.substring(0, 5);
+                            return `${start}-${end}`;
+                        });
+
+                    if (ranges.length > 0) {
+                        summaryParts.push(`${friendlyDate}: ${ranges.join(', ')}`);
+                    }
+                }
+
+                if (summaryParts.length > 0) {
+                    scheduleSummaryHtml = `
+                        <div style="margin-bottom: 24px; padding: 12px 16px; background: #f9f9f9; border-left: 4px solid #7A1C2C; border-radius: 4px;">
+                            <p style="margin: 0 0 4px; font-size: 13px; color: #333; font-weight: 600;">Saloon schedule (upcoming):</p>
+                            <p style="margin: 0; font-size: 13px; color: #555;">${summaryParts.join(' • ')}</p>
+                            <p style="margin: 8px 0 0; font-size: 12px; color: #999;">Only showing times when the saloon is marked as available.</p>
+                        </div>
+                    `;
+                }
+            }
+
             let html = `
                 <div style="margin-bottom: 24px;">
                     <p style="color: #666; margin-bottom: 16px;"><strong>Service:</strong> ${selectedServiceName}</p>
                     <p style="color: #666; margin-bottom: 24px;"><strong>Price:</strong> ${selectedServicePrice}</p>
                 </div>
+
+                ${scheduleSummaryHtml}
 
                 <div style="margin-bottom: 24px;">
                     <label style="display: block; color: #1a1a1a; font-size: 14px; font-weight: 600; margin-bottom: 12px;">Select Date</label>
@@ -2351,11 +3381,13 @@ $conn->close();
                 const dayNum = date.getDate();
                 const monthName = date.toLocaleDateString('en-US', { month: 'short' });
                 const isPast = index === 0 && new Date().getHours() >= 18;
-                
-                // Check if this day has any available slots
-                const dayOfWeek = date.getDay();
-                const hasAvailability = !serviceAvailability || serviceAvailability.length === 0 || 
-                    serviceAvailability.some(avail => avail.day_of_week === dayOfWeek);
+
+                // Check if this specific date has any available slots
+                const dateKey = date.toISOString().split('T')[0];
+                let hasAvailability = false;
+                if (availabilityByDate && availabilityByDate[dateKey] && availabilityByDate[dateKey].length > 0) {
+                    hasAvailability = availabilityByDate[dateKey].some(entry => parseInt(entry.is_available) === 1);
+                }
                 
                 const isDisabled = isPast || !hasAvailability;
                 
@@ -2489,18 +3521,26 @@ $conn->close();
             // Disable past times if today
             if (dateStr === new Date().toISOString().split('T')[0]) {
                 const now = new Date();
-                const currentHour = now.getHours();
                 document.querySelectorAll('.time-slot-btn').forEach(btn => {
                     const hour = parseInt(btn.textContent.match(/\d+/)[0]);
+                    let actualHour = hour;
+                    
+                    // Convert to 24-hour format
                     if (btn.textContent.includes('PM') && hour !== 12) {
-                        const actualHour = hour + 12;
-                        if (actualHour <= currentHour) {
-                            btn.classList.add('disabled');
-                            btn.disabled = true;
-                        }
-                    } else if (btn.textContent.includes('AM') && hour < 12 && hour <= currentHour) {
+                        actualHour = hour + 12;
+                    } else if (btn.textContent.includes('AM') && hour === 12) {
+                        actualHour = 0;
+                    }
+                    
+                    // Create datetime for this slot
+                    const slotDateTime = new Date(selectedDateObj);
+                    slotDateTime.setHours(actualHour, 0, 0, 0);
+                    
+                    // Disable if slot time is in the past (before current time)
+                    if (slotDateTime < now) {
                         btn.classList.add('disabled');
                         btn.disabled = true;
+                        btn.title = 'Past time - cannot book';
                     }
                 });
             }
@@ -2965,6 +4005,19 @@ $conn->close();
             }, 100);
         }
 
+        function openUpdateProfileModal() {
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/19dbfd65-af3c-4960-a38f-4b58e38246f6',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'customer_dashboard.php:openUpdateProfileModal',message:'Opening update profile modal',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+            // #endregion agent log
+            document.getElementById('updateProfileModal').style.display = 'block';
+        }
+
+        function closeUpdateProfileModal() {
+            document.getElementById('updateProfileModal').style.display = 'none';
+        }
+
+        // Close update profile modal when clicking outside
+
         function setStarRating(rating) {
             document.getElementById('reviewRating').value = rating;
             highlightStars(rating);
@@ -3013,11 +4066,15 @@ $conn->close();
         window.onclick = function(event) {
             const reviewModal = document.getElementById('reviewModal');
             const slotModal = document.getElementById('slotModal');
+            const updateProfileModal = document.getElementById('updateProfileModal');
             if (event.target == reviewModal) {
                 closeReviewModal();
             }
             if (event.target == slotModal) {
                 closeSlotModal();
+            }
+            if (event.target == updateProfileModal) {
+                closeUpdateProfileModal();
             }
         }
     </script>

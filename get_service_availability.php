@@ -1,6 +1,6 @@
 <?php
-// API endpoint to fetch saloon availability (Option B - per saloon, not per service)
-// Gets saloon_id from service_id and returns saloon-level availability
+// API endpoint to fetch saloon availability (date-specific, per saloon via service)
+// Gets saloon_id from service_id and returns saloon-level availability keyed by date
 header('Content-Type: application/json');
 
 // Database configuration
@@ -46,45 +46,65 @@ if ($saloon_id === null) {
     exit();
 }
 
-// Check if saloon_availability table exists
-$table_check = $conn->query("SHOW TABLES LIKE 'saloon_availability'");
+// Check if saloon_date_availability table exists
+$table_check = $conn->query("SHOW TABLES LIKE 'saloon_date_availability'");
 if ($table_check && $table_check->num_rows == 0) {
-    // Table doesn't exist, return empty availability (all slots available)
+    // Table doesn't exist, return empty availability (no schedule defined)
     echo json_encode([
         'success' => true,
         'service_id' => $service_id,
         'saloon_id' => $saloon_id,
-        'availability' => [],
-        'message' => 'No availability restrictions (all slots available)'
+        'has_schedule' => false,
+        'availability_by_date' => [],
+        'message' => 'No date-specific availability defined'
     ]);
     $conn->close();
     exit();
 }
 
-// Fetch availability for this saloon (Option B - saloon-level availability)
-$availability = [];
-$stmt = $conn->prepare("SELECT day_of_week, start_time, end_time, is_available FROM saloon_availability WHERE saloon_id = ? AND is_available = 1 ORDER BY day_of_week");
-$stmt->bind_param("i", $saloon_id);
+// Fetch date-specific availability for this saloon
+// Only include dates from today up to the next 30 days
+$today = date('Y-m-d');
+$endDate = date('Y-m-d', strtotime('+30 days'));
+
+$availabilityByDate = [];
+$stmt = $conn->prepare("
+    SELECT date, start_time, end_time, is_available 
+    FROM saloon_date_availability 
+    WHERE saloon_id = ? 
+      AND date >= ? 
+      AND date <= ?
+    ORDER BY date, start_time
+");
+$stmt->bind_param("iss", $saloon_id, $today, $endDate);
 $stmt->execute();
 $result = $stmt->get_result();
 
 while ($row = $result->fetch_assoc()) {
-    $availability[] = [
-        'day_of_week' => (int)$row['day_of_week'],
+    $dateKey = $row['date'];
+    if (!isset($availabilityByDate[$dateKey])) {
+        $availabilityByDate[$dateKey] = [];
+    }
+
+    $availabilityByDate[$dateKey][] = [
         'start_time' => $row['start_time'],
-        'end_time' => $row['end_time']
+        'end_time' => $row['end_time'],
+        'is_available' => (int)$row['is_available']
     ];
 }
 $stmt->close();
+
+// Determine if there is any availability defined
+$hasSchedule = !empty($availabilityByDate);
 
 // Return JSON response
 echo json_encode([
     'success' => true,
     'service_id' => $service_id,
     'saloon_id' => $saloon_id,
-    'availability' => $availability
+    'has_schedule' => $hasSchedule,
+    'availability_by_date' => $availabilityByDate
 ]);
 
 $conn->close();
 ?>
-
