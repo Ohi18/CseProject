@@ -467,18 +467,9 @@ if ($table_check && $table_check->num_rows > 0) {
     $reviews_stmt->bind_param("i", $saloon_id);
     $reviews_stmt->execute();
     $reviews_result = $reviews_stmt->get_result();
-    // #region agent log
-    file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'run1','hypothesisId'=>'A','location'=>'saloon_dashboard.php:468','message'=>'Query executed, fetching reviews','data'=>['saloon_id'=>$saloon_id,'num_rows'=>$reviews_result->num_rows],'timestamp'=>time()*1000])."\n", FILE_APPEND);
-    // #endregion
     while ($review_row = $reviews_result->fetch_assoc()) {
-        // #region agent log
-        file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'run1','hypothesisId'=>'B','location'=>'saloon_dashboard.php:471','message'=>'Raw review row from database','data'=>['review_id'=>$review_row['review_id']??null,'rating'=>$review_row['rating']??null,'review_text_raw'=>$review_row['review_text']??null,'review_text_type'=>gettype($review_row['review_text']??null),'review_text_length'=>isset($review_row['review_text'])?strlen($review_row['review_text']):0,'review_text_is_null'=>is_null($review_row['review_text']??null),'review_text_is_empty'=>empty($review_row['review_text']??null),'customer_name'=>$review_row['customer_name']??null,'created_at'=>$review_row['created_at']??null],'timestamp'=>time()*1000])."\n", FILE_APPEND);
-        // #endregion
         $reviews[] = $review_row;
     }
-    // #region agent log
-    file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'run1','hypothesisId'=>'C','location'=>'saloon_dashboard.php:475','message'=>'All reviews fetched','data'=>['total_reviews'=>count($reviews)],'timestamp'=>time()*1000])."\n", FILE_APPEND);
-    // #endregion
     $reviews_stmt->close();
 }
 
@@ -880,6 +871,45 @@ $conn->close();
         .service-actions {
             display: flex;
             gap: 8px;
+        }
+
+        .service-view-mode {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+        }
+
+        .service-edit-mode {
+            width: 100%;
+        }
+
+        .service-edit-mode .service-info {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .service-edit-input {
+            padding: 8px 12px;
+            border: 1px solid #d0d0d0;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+            width: 100%;
+            transition: border-color 0.2s;
+        }
+
+        .service-edit-input:focus {
+            outline: none;
+            border-color: #7A1C2C;
+        }
+
+        .service-item.editing {
+            background: #fff;
+            border-color: #7A1C2C;
+            box-shadow: 0 2px 8px rgba(122, 28, 44, 0.1);
         }
 
         .empty-state {
@@ -1425,18 +1455,40 @@ $conn->close();
                 <?php else: ?>
                     <div class="services-list">
                         <?php foreach ($services as $service): ?>
-                            <div class="service-item">
-                                <div class="service-info">
-                                    <div class="service-name"><?php echo htmlspecialchars($service['name']); ?></div>
-                                    <div class="service-range"><?php echo htmlspecialchars($service['range']); ?></div>
+                            <div class="service-item" id="service-item-<?php echo $service['service_id']; ?>" data-service-id="<?php echo $service['service_id']; ?>">
+                                <!-- View Mode -->
+                                <div class="service-view-mode">
+                                    <div class="service-info">
+                                        <div class="service-name"><?php echo htmlspecialchars($service['name']); ?></div>
+                                        <div class="service-range"><?php echo htmlspecialchars($service['range']); ?></div>
+                                    </div>
+                                    <div class="service-actions">
+                                        <button type="button" class="btn btn-secondary btn-small" onclick="editServiceInline(<?php echo $service['service_id']; ?>)">Edit</button>
+                                        <form method="POST" action="saloon_dashboard.php" style="display: inline;" 
+                                              onsubmit="return confirm('Are you sure you want to delete this service?');">
+                                            <input type="hidden" name="action" value="delete_service">
+                                            <input type="hidden" name="service_id" value="<?php echo $service['service_id']; ?>">
+                                            <button type="submit" class="btn btn-danger btn-small">Delete</button>
+                                        </form>
+                                    </div>
                                 </div>
-                                <div class="service-actions">
-                                    <a href="saloon_dashboard.php?edit_service=<?php echo $service['service_id']; ?>" class="btn btn-secondary btn-small">Edit</a>
-                                    <form method="POST" action="saloon_dashboard.php" style="display: inline;" 
-                                          onsubmit="return confirm('Are you sure you want to delete this service?');">
-                                        <input type="hidden" name="action" value="delete_service">
+                                <!-- Edit Mode -->
+                                <div class="service-edit-mode" style="display: none;">
+                                    <form method="POST" action="saloon_dashboard.php" class="service-edit-form">
+                                        <input type="hidden" name="action" value="update_service">
                                         <input type="hidden" name="service_id" value="<?php echo $service['service_id']; ?>">
-                                        <button type="submit" class="btn btn-danger btn-small">Delete</button>
+                                        <div class="service-info">
+                                            <input type="text" name="service_name" class="service-edit-input" 
+                                                   value="<?php echo htmlspecialchars($service['name']); ?>" 
+                                                   required placeholder="Service Name">
+                                            <input type="text" name="service_range" class="service-edit-input" 
+                                                   value="<?php echo htmlspecialchars($service['range']); ?>" 
+                                                   required placeholder="Price/Range">
+                                        </div>
+                                        <div class="service-actions">
+                                            <button type="submit" class="btn btn-primary btn-small">Save</button>
+                                            <button type="button" class="btn btn-secondary btn-small" onclick="cancelServiceEdit(<?php echo $service['service_id']; ?>)">Cancel</button>
+                                        </div>
                                     </form>
                                 </div>
                             </div>
@@ -1618,26 +1670,14 @@ $conn->close();
                                 </div>
                                 <div class="review-text">
                                     <?php 
-                                        // #region agent log
-                                        file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'post-fix','hypothesisId'=>'D','location'=>'saloon_dashboard.php:1611','message'=>'Before processing review_text','data'=>['review_id'=>$review['review_id']??null,'review_text_before'=>isset($review['review_text'])?$review['review_text']:null,'review_text_type'=>gettype($review['review_text']??null),'review_text_is_set'=>isset($review['review_text']),'review_text_is_null'=>is_null($review['review_text']??null)],'timestamp'=>time()*1000])."\n", FILE_APPEND);
-                                        // #endregion
                                         $reviewText = isset($review['review_text']) ? trim($review['review_text']) : '';
                                         // Treat "0" as empty (corrupted data from previous bug)
                                         if ($reviewText === '0') {
                                             $reviewText = '';
                                         }
-                                        // #region agent log
-                                        file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'post-fix','hypothesisId'=>'E','location'=>'saloon_dashboard.php:1614','message'=>'After trim review_text','data'=>['review_id'=>$review['review_id']??null,'review_text_after_trim'=>$reviewText,'review_text_length'=>strlen($reviewText),'review_text_is_empty'=>empty($reviewText),'will_show_text'=>!empty($reviewText)],'timestamp'=>time()*1000])."\n", FILE_APPEND);
-                                        // #endregion
                                         if (!empty($reviewText)) {
-                                            // #region agent log
-                                            file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'post-fix','hypothesisId'=>'F','location'=>'saloon_dashboard.php:1617','message'=>'Displaying review text','data'=>['review_id'=>$review['review_id']??null],'timestamp'=>time()*1000])."\n", FILE_APPEND);
-                                            // #endregion
                                             echo nl2br(htmlspecialchars($reviewText));
                                         } else {
-                                            // #region agent log
-                                            file_put_contents('c:\\xampp\\htdocs\\goglam\\.cursor\\debug.log', json_encode(['sessionId'=>'debug-session','runId'=>'post-fix','hypothesisId'=>'G','location'=>'saloon_dashboard.php:1620','message'=>'Showing no comment provided','data'=>['review_id'=>$review['review_id']??null,'review_text_was'=>$reviewText],'timestamp'=>time()*1000])."\n", FILE_APPEND);
-                                            // #endregion
                                             echo '<span style="color: #999; font-style: italic;">No comment provided</span>';
                                         }
                                     ?>
@@ -1872,6 +1912,108 @@ $conn->close();
             // Add active class to clicked tab
             event.target.classList.add('active');
         }
+
+        // Inline Service Editing Functions
+        function editServiceInline(serviceId) {
+            // Cancel any other service being edited
+            document.querySelectorAll('.service-item').forEach(item => {
+                const otherServiceId = item.dataset.serviceId;
+                if (otherServiceId && parseInt(otherServiceId) !== serviceId) {
+                    cancelServiceEdit(parseInt(otherServiceId));
+                }
+            });
+
+            const serviceItem = document.getElementById('service-item-' + serviceId);
+            if (!serviceItem) return;
+
+            const viewMode = serviceItem.querySelector('.service-view-mode');
+            const editMode = serviceItem.querySelector('.service-edit-mode');
+
+            if (viewMode && editMode) {
+                viewMode.style.display = 'none';
+                editMode.style.display = 'block';
+                serviceItem.classList.add('editing');
+                
+                // Focus on first input
+                const firstInput = editMode.querySelector('.service-edit-input');
+                if (firstInput) {
+                    firstInput.focus();
+                }
+            }
+        }
+
+        function cancelServiceEdit(serviceId) {
+            const serviceItem = document.getElementById('service-item-' + serviceId);
+            if (!serviceItem) return;
+
+            const viewMode = serviceItem.querySelector('.service-view-mode');
+            const editMode = serviceItem.querySelector('.service-edit-mode');
+
+            if (viewMode && editMode) {
+                viewMode.style.display = 'flex';
+                editMode.style.display = 'none';
+                serviceItem.classList.remove('editing');
+            }
+        }
+
+        function saveServiceEdit(serviceId) {
+            const serviceItem = document.getElementById('service-item-' + serviceId);
+            if (!serviceItem) {
+                console.error('Service item not found for ID:', serviceId);
+                return false;
+            }
+
+            const form = serviceItem.querySelector('.service-edit-form');
+            if (!form) {
+                console.error('Edit form not found for service ID:', serviceId);
+                return false;
+            }
+
+            // Validate inputs
+            const nameInput = form.querySelector('input[name="service_name"]');
+            const rangeInput = form.querySelector('input[name="service_range"]');
+
+            if (!nameInput || !nameInput.value.trim()) {
+                alert('Service name is required.');
+                if (nameInput) nameInput.focus();
+                return false;
+            }
+
+            if (!rangeInput || !rangeInput.value.trim()) {
+                alert('Service price/range is required.');
+                if (rangeInput) rangeInput.focus();
+                return false;
+            }
+
+            // Validation passed - form will submit normally
+            return true;
+        }
+
+        // Handle form submission for inline edits
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelectorAll('.service-edit-form').forEach(form => {
+                form.addEventListener('submit', function(e) {
+                    const serviceIdInput = this.querySelector('input[name="service_id"]');
+                    if (!serviceIdInput || !serviceIdInput.value) {
+                        console.error('Service ID not found in form');
+                        e.preventDefault();
+                        return;
+                    }
+                    
+                    const serviceId = parseInt(serviceIdInput.value);
+                    if (isNaN(serviceId)) {
+                        console.error('Invalid service ID:', serviceIdInput.value);
+                        e.preventDefault();
+                        return;
+                    }
+                    
+                    if (!saveServiceEdit(serviceId)) {
+                        e.preventDefault();
+                    }
+                    // If validation passes, form will submit normally
+                });
+            });
+        });
 
         // Edit Booking modal helpers
         function openEditBookingModal(button) {
