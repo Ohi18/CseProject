@@ -2127,6 +2127,8 @@ $conn->close();
                             <option value="hair">Hair</option>
                             <option value="face">Face</option>
                             <option value="nail">Nail</option>
+                            <option value="manicure">Manicure</option>
+                            <option value="pedicure">Pedicure</option>
                             <option value="body">Body</option>
                             <option value="consultation">Consultation</option>
                             <option value="makeup">Makeup</option>
@@ -2405,6 +2407,8 @@ $conn->close();
                 'hair': 'hair',
                 'face': 'face',
                 'nail': 'nail',
+                'manicure': 'manicure',
+                'pedicure': 'pedicure',
                 'body': 'body',
                 'consultation': 'consultation',
                 'makeup': 'makeup'

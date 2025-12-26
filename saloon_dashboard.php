@@ -880,37 +880,6 @@ $conn->close();
             width: 100%;
         }
 
-        .service-edit-mode {
-            width: 100%;
-        }
-
-        .service-edit-mode .service-info {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            margin-bottom: 12px;
-        }
-
-        .service-edit-input {
-            padding: 8px 12px;
-            border: 1px solid #d0d0d0;
-            border-radius: 6px;
-            font-size: 14px;
-            font-family: inherit;
-            width: 100%;
-            transition: border-color 0.2s;
-        }
-
-        .service-edit-input:focus {
-            outline: none;
-            border-color: #7A1C2C;
-        }
-
-        .service-item.editing {
-            background: #fff;
-            border-color: #7A1C2C;
-            box-shadow: 0 2px 8px rgba(122, 28, 44, 0.1);
-        }
 
         .empty-state {
             text-align: center;
@@ -1463,7 +1432,11 @@ $conn->close();
                                         <div class="service-range"><?php echo htmlspecialchars($service['range']); ?></div>
                                     </div>
                                     <div class="service-actions">
-                                        <button type="button" class="btn btn-secondary btn-small" onclick="editServiceInline(<?php echo $service['service_id']; ?>)">Edit</button>
+                                        <button type="button" class="btn btn-secondary btn-small" 
+                                                onclick="openEditServiceModal(this)"
+                                                data-service-id="<?php echo $service['service_id']; ?>"
+                                                data-service-name="<?php echo htmlspecialchars($service['name']); ?>"
+                                                data-service-range="<?php echo htmlspecialchars($service['range']); ?>">Edit</button>
                                         <form method="POST" action="saloon_dashboard.php" style="display: inline;" 
                                               onsubmit="return confirm('Are you sure you want to delete this service?');">
                                             <input type="hidden" name="action" value="delete_service">
@@ -1471,25 +1444,6 @@ $conn->close();
                                             <button type="submit" class="btn btn-danger btn-small">Delete</button>
                                         </form>
                                     </div>
-                                </div>
-                                <!-- Edit Mode -->
-                                <div class="service-edit-mode" style="display: none;">
-                                    <form method="POST" action="saloon_dashboard.php" class="service-edit-form">
-                                        <input type="hidden" name="action" value="update_service">
-                                        <input type="hidden" name="service_id" value="<?php echo $service['service_id']; ?>">
-                                        <div class="service-info">
-                                            <input type="text" name="service_name" class="service-edit-input" 
-                                                   value="<?php echo htmlspecialchars($service['name']); ?>" 
-                                                   required placeholder="Service Name">
-                                            <input type="text" name="service_range" class="service-edit-input" 
-                                                   value="<?php echo htmlspecialchars($service['range']); ?>" 
-                                                   required placeholder="Price/Range">
-                                        </div>
-                                        <div class="service-actions">
-                                            <button type="submit" class="btn btn-primary btn-small">Save</button>
-                                            <button type="button" class="btn btn-secondary btn-small" onclick="cancelServiceEdit(<?php echo $service['service_id']; ?>)">Cancel</button>
-                                        </div>
-                                    </form>
                                 </div>
                             </div>
                         <?php endforeach; ?>
@@ -1828,6 +1782,37 @@ $conn->close();
         </div>
     </div>
 
+    <!-- Edit Service Modal -->
+    <div id="editServiceModalOverlay" class="modal-overlay" onclick="closeEditServiceModal(event)">
+        <div class="modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <div class="modal-title" id="editServiceTitle">Edit Service</div>
+                <button type="button" class="modal-close" onclick="closeEditServiceModal()">&times;</button>
+            </div>
+            <form method="POST" action="saloon_dashboard.php">
+                <input type="hidden" name="action" value="update_service">
+                <input type="hidden" name="service_id" id="editServiceId">
+
+                <div class="form-group">
+                    <label for="editServiceName">Service Name *</label>
+                    <input type="text" id="editServiceName" name="service_name" 
+                           required placeholder="e.g., Hair Cut, Facial, Manicure">
+                </div>
+
+                <div class="form-group">
+                    <label for="editServiceRange">Price/Range *</label>
+                    <input type="text" id="editServiceRange" name="service_range" 
+                           required placeholder="e.g., 500-1000, ৳500, $50-100">
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" onclick="closeEditServiceModal()">Close</button>
+                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <!-- Profile Modal -->
     <div id="profileModalOverlay" class="profile-modal-overlay" onclick="closeProfileModal(event)">
         <div class="profile-modal" onclick="event.stopPropagation()">
@@ -1913,106 +1898,51 @@ $conn->close();
             event.target.classList.add('active');
         }
 
-        // Inline Service Editing Functions
-        function editServiceInline(serviceId) {
-            // Cancel any other service being edited
-            document.querySelectorAll('.service-item').forEach(item => {
-                const otherServiceId = item.dataset.serviceId;
-                if (otherServiceId && parseInt(otherServiceId) !== serviceId) {
-                    cancelServiceEdit(parseInt(otherServiceId));
+        // Edit Service modal helpers
+        function openEditServiceModal(button) {
+            var serviceId = button.getAttribute('data-service-id');
+            var serviceName = button.getAttribute('data-service-name') || '';
+            var serviceRange = button.getAttribute('data-service-range') || '';
+
+            var titleEl = document.getElementById('editServiceTitle');
+            if (titleEl) {
+                titleEl.textContent = 'Edit Service';
+            }
+
+            document.getElementById('editServiceId').value = serviceId;
+            document.getElementById('editServiceName').value = serviceName;
+            document.getElementById('editServiceRange').value = serviceRange;
+
+            var overlay = document.getElementById('editServiceModalOverlay');
+            if (overlay) {
+                overlay.style.display = 'flex';
+            }
+        }
+
+        function closeEditServiceModal(event) {
+            // If event is provided and user clicked on overlay (not modal), close it
+            if (event && event.target.id === 'editServiceModalOverlay') {
+                var overlay = document.getElementById('editServiceModalOverlay');
+                if (overlay) {
+                    overlay.style.display = 'none';
                 }
-            });
+                return;
+            }
+            // Otherwise, close normally
+            var overlay = document.getElementById('editServiceModalOverlay');
+            if (overlay) {
+                overlay.style.display = 'none';
+            }
+        }
 
-            const serviceItem = document.getElementById('service-item-' + serviceId);
-            if (!serviceItem) return;
-
-            const viewMode = serviceItem.querySelector('.service-view-mode');
-            const editMode = serviceItem.querySelector('.service-edit-mode');
-
-            if (viewMode && editMode) {
-                viewMode.style.display = 'none';
-                editMode.style.display = 'block';
-                serviceItem.classList.add('editing');
-                
-                // Focus on first input
-                const firstInput = editMode.querySelector('.service-edit-input');
-                if (firstInput) {
-                    firstInput.focus();
+        // Close service modal on Escape key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                var overlay = document.getElementById('editServiceModalOverlay');
+                if (overlay && overlay.style.display === 'flex') {
+                    closeEditServiceModal();
                 }
             }
-        }
-
-        function cancelServiceEdit(serviceId) {
-            const serviceItem = document.getElementById('service-item-' + serviceId);
-            if (!serviceItem) return;
-
-            const viewMode = serviceItem.querySelector('.service-view-mode');
-            const editMode = serviceItem.querySelector('.service-edit-mode');
-
-            if (viewMode && editMode) {
-                viewMode.style.display = 'flex';
-                editMode.style.display = 'none';
-                serviceItem.classList.remove('editing');
-            }
-        }
-
-        function saveServiceEdit(serviceId) {
-            const serviceItem = document.getElementById('service-item-' + serviceId);
-            if (!serviceItem) {
-                console.error('Service item not found for ID:', serviceId);
-                return false;
-            }
-
-            const form = serviceItem.querySelector('.service-edit-form');
-            if (!form) {
-                console.error('Edit form not found for service ID:', serviceId);
-                return false;
-            }
-
-            // Validate inputs
-            const nameInput = form.querySelector('input[name="service_name"]');
-            const rangeInput = form.querySelector('input[name="service_range"]');
-
-            if (!nameInput || !nameInput.value.trim()) {
-                alert('Service name is required.');
-                if (nameInput) nameInput.focus();
-                return false;
-            }
-
-            if (!rangeInput || !rangeInput.value.trim()) {
-                alert('Service price/range is required.');
-                if (rangeInput) rangeInput.focus();
-                return false;
-            }
-
-            // Validation passed - form will submit normally
-            return true;
-        }
-
-        // Handle form submission for inline edits
-        document.addEventListener('DOMContentLoaded', function() {
-            document.querySelectorAll('.service-edit-form').forEach(form => {
-                form.addEventListener('submit', function(e) {
-                    const serviceIdInput = this.querySelector('input[name="service_id"]');
-                    if (!serviceIdInput || !serviceIdInput.value) {
-                        console.error('Service ID not found in form');
-                        e.preventDefault();
-                        return;
-                    }
-                    
-                    const serviceId = parseInt(serviceIdInput.value);
-                    if (isNaN(serviceId)) {
-                        console.error('Invalid service ID:', serviceIdInput.value);
-                        e.preventDefault();
-                        return;
-                    }
-                    
-                    if (!saveServiceEdit(serviceId)) {
-                        e.preventDefault();
-                    }
-                    // If validation passes, form will submit normally
-                });
-            });
         });
 
         // Edit Booking modal helpers
